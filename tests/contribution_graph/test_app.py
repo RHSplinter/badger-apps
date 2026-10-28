@@ -25,30 +25,9 @@ MINUTE = 60 * SECOND
 JUST_AFTER_REFRESH = 30 * MINUTE + 3 * SECOND
 RANDOM_SEEDS = int(os.environ.get("CONTRIB_RANDOM_SEEDS", "5"))
 RANDOM_STEPS = int(os.environ.get("CONTRIB_RANDOM_STEPS", "500"))
-HINT = "SELECT stats   MENU change user"
-STATS_HINT = "BACK graph   SELECT refresh   MENU user"
+HINT = "MENU change user   SELECT refresh"
 DATE_TEXT = re.compile(r"^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{4}$")
 RETRY_TEXT = re.compile(r"^(.+) - retrying in (\d+)s$")
-CELL = 9                      # graph cells are 9 x 9 px, 10 px apart
-TILE_LABELS = ("Contributions", "Busiest day", "Current streak", "Longest streak")
-
-
-def graph_columns(weeks):
-    """(weeks per band, left edge) worked out the long way.
-
-    The weeks sit side by side if they fit between the 8 px margins.
-    Otherwise they are split into two bands, the second one under the first.
-    """
-    per_band = weeks if weeks * 10 - 1 <= 320 - 16 else (weeks + 1) // 2
-    return per_band, (320 - (per_band * 10 - 1)) // 2
-
-
-def cell_xy(index, weeks=53, top=52):
-    """Top-left pixel of a day's cell on the graph page."""
-    per_band, left = graph_columns(weeks)
-    week, day = divmod(index, 7)
-    band, column = divmod(week, per_band)
-    return left + column * 10, top + band * 85 + day * 10
 
 
 def date_text(index, first=payloads.FIRST_SUNDAY):
@@ -72,50 +51,20 @@ def days_text(count):
     return "{} day{}".format(count, "" if count == 1 else "s")
 
 
-def short_date(index, first=payloads.FIRST_SUNDAY):
-    day = first + datetime.timedelta(days=index)
-    return "{} {}".format(MONTHS[day.month - 1], day.day)
-
-
-def expected_tiles(counts):
-    """The four tiles of the stats page, worked out the long way. Ties go to the latest day."""
-    runs = []                                       # (length, last day) of every streak
-    start = None
-    for index, count in enumerate(counts + [0]):
-        if count and start is None:
-            start = index
-        elif not count and start is not None:
-            runs.append((index - start, index - 1))
-            start = None
-    longest, end = max(runs, default=(0, None))
-    busiest = max(counts)
-    busiest_on = max(i for i, count in enumerate(counts) if count == busiest)
-    last = len(counts) - 1 if counts[-1] else len(counts) - 2
-    current = next((length for length, run_end in runs if run_end == last), 0)
-
-    def tile(label, value, note):
-        return (label, value, note) if note else (label, value)
-
-    if longest > 1:
-        streak_note = short_date(end - longest + 1) + " - " + short_date(end)
-    else:
-        streak_note = "on " + short_date(end) if longest else ""
-    return [tile("Contributions", "{:,}".format(sum(counts)), "in the last year"),
-            tile("Busiest day", "{:,}".format(busiest), "on " + short_date(busiest_on) if busiest else ""),
-            tile("Current streak", days_text(current), "since " + short_date(last - current + 1) if current else ""),
-            tile("Longest streak", days_text(longest), streak_note)]
-
-
-def stat_tiles(rt):
-    """The text inside each panel of the stats page, top to bottom, panels in drawing order."""
-    texts = [op for op in rt.screen.ops if op[0] == "text"]
-    tiles = []
-    for op in rt.screen.ops:
-        if op[0] == "shape":
-            _, x, y, w, h, _ = op[1]
-            inside = [t for t in texts if x <= t[2] < x + w and y <= t[3] and t[3] + t[4] <= y + h]
-            tiles.append(tuple(t[1] for t in sorted(inside, key=lambda t: t[3])))
-    return tiles
+def expected_stats(counts):
+    """(current streak, longest streak, busiest day), worked out the long way."""
+    longest = run = 0
+    for count in counts:
+        run = run + 1 if count else 0
+        longest = max(longest, run)
+    end = len(counts) - 1
+    if counts[end] == 0:
+        end -= 1
+    current = 0
+    while end >= 0 and counts[end]:
+        current += 1
+        end -= 1
+    return current, longest, max(counts)
 
 
 def other_payload(**kwargs):
@@ -303,163 +252,70 @@ class GraphScreenTests(AppCase):
     def test_every_day_is_drawn_in_its_own_cell(self):
         rt = self.rt
         palette = rt.namespace["LEVEL_COLORS"]
+        top = rt.namespace["GRAPH_Y"]
+        left = (320 - (53 * 6 - 1)) // 2            # 53 columns of 6 px, centred
         expected = set()
         for week in self.payload["weeks"]:
             for day in week["contribution_days"]:
-                expected.add(cell_xy(week["index"] * 7 + day["weekday"]) + (palette[day["level"]],))
-        drawn = [(r[1], r[2], r[5]) for r in rt.rects() if (r[3], r[4]) == (CELL, CELL)]
+                expected.add((left + week["index"] * 6, top + day["weekday"] * 6, palette[day["level"]]))
+        drawn = [(r[1], r[2], r[5]) for r in rt.rects() if (r[3], r[4]) == (5, 5)]
         self.assertEqual(len(drawn), 367)
         self.assertEqual(set(drawn), expected)
 
-    def test_the_year_is_split_into_two_rows_of_half_a_year(self):
-        cells = [r for r in self.rt.rects() if (r[3], r[4]) == (CELL, CELL)]
-        top = self.rt.namespace["GRAPH_Y"]
-        first_half = [r for r in cells if r[2] < top + 85]
-        self.assertEqual(len(first_half), 27 * 7)
-        self.assertEqual(min(r[1] for r in cells), 25)
-        self.assertEqual(max(r[1] for r in cells) + CELL, 320 - 26)       # 269 px wide, centred
-        self.assertEqual(max(r[2] for r in first_half) + CELL, top + 69)
-        self.assertEqual(min(r[2] for r in cells if r not in first_half), top + 85)
-
     def test_the_selected_day_has_a_white_outline(self):
         rt = self.rt
-        x, y = cell_xy(366)
+        left = (320 - (53 * 6 - 1)) // 2
+        x = left + (366 // 7) * 6
+        y = rt.namespace["GRAPH_Y"] + (366 % 7) * 6
         outline = [r[1:5] for r in rt.rects() if r[5] == rt.namespace["WHITE"]]
         self.assertEqual(sorted(outline),
-                         sorted([(x - 1, y - 1, 11, 1), (x - 1, y + 9, 11, 1), (x - 1, y, 1, 9), (x + 9, y, 1, 9)]))
+                         sorted([(x - 1, y - 1, 7, 1), (x - 1, y + 5, 7, 1), (x - 1, y, 1, 5), (x + 5, y, 1, 5)]))
 
     def test_months_are_labelled_in_order(self):
         names = [t for t in self.rt.texts() if t in MONTHS]
         self.assertEqual(names, ["Nov", "Dec", "Jan", "Feb", "Mar", "Apr",
                                  "May", "Jun", "Jul", "Aug", "Sep", "Oct"])
 
-    def test_the_graph_page_shows_the_year_and_the_selected_day(self):
+    def test_the_texts_around_the_graph(self):
         texts = self.rt.texts()
-        count = payloads.flat_counts(self.payload)[366]
-        for text in ("@RHSplinter", summary_text(self.total), date_text(366), count_text(count), HINT):
+        for text in ("@RHSplinter", summary_text(self.total), "as of Oct 27", "Less", "More",
+                     "Current streak", "Longest streak", "Busiest day"):
             self.assertIn(text, texts)
-        for text in ("as of Oct 27", "Less", "More") + TILE_LABELS:
-            self.assertNotIn(text, texts)
 
-    def test_the_stats_page_shows_the_numbers_and_the_legend(self):
-        rt = self.rt
-        rt.press("SELECT")
-        texts = rt.texts()
-        for text in ("@RHSplinter", "as of Oct 27", "Less", "More", STATS_HINT) + TILE_LABELS:
-            self.assertIn(text, texts)
-        for text in (summary_text(self.total), date_text(366), HINT):
-            self.assertNotIn(text, texts)
-        self.assertEqual([r for r in rt.rects() if (r[3], r[4]) == (CELL, CELL)], [])
-
-    def test_the_four_tiles(self):
+    def test_the_three_numbers_under_the_graph(self):
         designed = payloads.build(count_for=lambda i: 5 if 100 <= i < 110 else 3 if i >= 364 else 0)
-        self.assertEqual(expected_tiles(payloads.flat_counts(designed)),
-                         [("Contributions", "59", "in the last year"),
-                          ("Busiest day", "5", "on Feb 12"),
-                          ("Current streak", "3 days", "since Oct 25"),
-                          ("Longest streak", "10 days", "Feb 3 - Feb 12")])
+        self.assertEqual(expected_stats(payloads.flat_counts(designed)), (3, 10, 5))
         for name, data in (("designed", designed), ("default", self.payload)):
             with self.subTest(name):
                 with tempfile.TemporaryDirectory() as root:
                     rt = self.launched(Reply(data), root=root)
-                    rt.press("SELECT")
-                    self.assertEqual(stat_tiles(rt), expected_tiles(payloads.flat_counts(data)))
+                    current, longest, busiest = expected_stats(payloads.flat_counts(data))
+                    y = rt.namespace["STATS_Y"]
+                    values = [op for op in rt.screen.ops if op[0] == "text" and op[3] == y]
+                    values.sort(key=lambda op: op[2])
+                    self.assertEqual([op[1] for op in values],
+                                     [days_text(current), days_text(longest), str(busiest)])
+                    labels = [op for op in rt.screen.ops if op[0] == "text" and op[3] == y + 24]
+                    labels.sort(key=lambda op: op[2])
+                    self.assertEqual([op[1] for op in labels], ["Current streak", "Longest streak", "Busiest day"])
 
     def test_big_numbers_get_thousands_separators(self):
         payload = payloads.build(count_for=lambda i: 3000)
         rt = self.launched(Reply(payload))
         self.assertIn("1,101,000 contributions in the last year", rt.texts())
         self.assertIn("3,000 contributions", rt.texts())
-        rt.press("SELECT")
-        self.assertEqual(stat_tiles(rt), [("Contributions", "1,101,000", "in the last year"),
-                                          ("Busiest day", "3,000", "on Oct 27"),
-                                          ("Current streak", "367 days", "since Oct 26"),
-                                          ("Longest streak", "367 days", "Oct 26 - Oct 27")])
+        self.assertIn("3,000", rt.texts())
+        self.assertIn("367 days", rt.texts())
 
     def test_a_year_without_contributions(self):
         rt = self.launched(Reply(payloads.build(count_for=lambda i: 0)))
         texts = rt.texts()
         self.assertIn("No contributions in the last year", texts)
         self.assertIn("No contributions", texts)
+        self.assertIn("0 days", texts)
+        self.assertIn("0", texts)
         palette = rt.namespace["LEVEL_COLORS"]
-        self.assertEqual({r[5] for r in rt.rects() if (r[3], r[4]) == (CELL, CELL)}, {palette[0]})
-        rt.press("SELECT")
-        self.assertEqual(stat_tiles(rt), [("Contributions", "0", "in the last year"),
-                                          ("Busiest day", "0"),
-                                          ("Current streak", "0 days"),
-                                          ("Longest streak", "0 days")])
-
-
-class PageTests(AppCase):
-    def setUp(self):
-        super().setUp()
-        self.rt = self.launched(Reply(self.payload), Reply(self.payload, hold=True))
-
-    def dots(self):
-        """(x, colour) of the two page dots, left to right."""
-        return sorted((r[1], r[5]) for r in self.rt.rects() if (r[3], r[4]) == (6, 6))
-
-    def test_select_shows_the_stats_and_back_the_graph(self):
-        rt, ns = self.rt, self.rt.namespace
-        self.assertEqual(rt.app.page, ns["GRAPH_PAGE"])
-        self.assertEqual(self.dots(), [(296, ns["LIME"]), (306, ns["MUTED"])])
-        self.assertEqual(footer(rt), (HINT, ns["MUTED"]))
-        rt.press("SELECT")
-        self.assertEqual(rt.app.page, ns["STATS_PAGE"])
-        self.assertEqual(self.dots(), [(296, ns["MUTED"]), (306, ns["LIME"])])
-        self.assertEqual(footer(rt), (STATS_HINT, ns["MUTED"]))
-        self.assertEqual(len(rt.requests), 1)
-        rt.press("BACK")
-        self.assertEqual(rt.app.page, ns["GRAPH_PAGE"])
-        self.assertIn(date_text(366), rt.texts())
-
-    def test_the_dots_sit_in_the_top_right_corner_clear_of_the_name(self):
-        rt = self.launched(Reply(self.payload), root=tempfile.mkdtemp(dir=self.root),
-                           state={"handle": "w" * 39})
-        title = text_op(rt, "@" + "w" * 39)
-        right_edge = title[1] + len(title[0]) * title[3] * 0.55
-        dots = [r for r in rt.rects() if (r[3], r[4]) == (6, 6)]
-        self.assertEqual(len(dots), 2)
-        for dot in dots:
-            self.assertGreater(dot[1], right_edge + 4)
-            self.assertLessEqual(dot[1] + 6, 320 - 8)
-            self.assertTrue(title[2] <= dot[2] and dot[2] + 6 <= title[2] + title[3] + 2)
-
-    def test_the_cursor_waits_on_the_graph_page_while_the_stats_are_shown(self):
-        rt = self.rt
-        rt.press("LEFT")
-        rt.press("UP")
-        rt.press("SELECT")
-        for name in ("LEFT", "RIGHT", "UP", "DOWN", "LEFT"):
-            rt.press(name)
-        self.assertEqual(rt.app.cursor, 366 - 8)
-        rt.press("BACK")
-        self.assertEqual(rt.app.cursor, 366 - 8)
-        self.assertIn(date_text(366 - 8), rt.texts())
-
-    def test_select_on_the_stats_page_refreshes(self):
-        rt = self.rt
-        rt.press("SELECT")
-        rt.press("SELECT")
-        self.assertEqual(len(rt.requests), 2)
-        self.assertEqual(footer(rt)[0], "Fetching contributions")
-        self.assertEqual(rt.app.page, rt.namespace["STATS_PAGE"])
-        self.assertIn("Busiest day", rt.texts())
-
-    def test_menu_works_on_the_stats_page_and_the_page_is_kept_for_the_next_user(self):
-        rt = self.launched(Reply(self.payload), Reply(other_payload()), root=tempfile.mkdtemp(dir=self.root))
-        rt.press("SELECT")
-        rt.press("MENU")
-        self.assertIsNotNone(rt.app.editor)
-        rt.press("MENU")
-        self.assertIsNone(rt.app.editor)
-        self.assertIn("Busiest day", rt.texts())
-        rt.enter_user("octocat")
-        rt.frames_for(6)
-        self.assertEqual(rt.app.handle, "octocat")
-        self.assertEqual(rt.app.page, rt.namespace["STATS_PAGE"])
-        self.assertIn("@octocat", rt.texts())
-        self.assertEqual(stat_tiles(rt)[0], ("Contributions", "367", "in the last year"))
+        self.assertEqual({r[5] for r in rt.rects() if (r[3], r[4]) == (5, 5)}, {palette[0]})
 
 
 class NavigationTests(AppCase):
@@ -1087,7 +943,6 @@ class RefreshTests(AppCase):
         self.assertEqual(len(rt.requests), 2)
         rt.frames_for(5)
         self.assertIn(summary_text(newer["total_contributions"]), rt.texts())
-        rt.press("SELECT")
         self.assertIn("as of Oct 28", rt.texts())
 
     def test_the_cursor_follows_the_newest_day_when_it_was_on_it(self):
@@ -1112,8 +967,6 @@ class RefreshTests(AppCase):
 
     def test_select_refreshes_immediately_but_only_one_download_runs_at_a_time(self):
         rt = self.launched(Reply(self.payload), Reply(self.payload, pumps=10), Reply(self.payload))
-        rt.press("SELECT")
-        self.assertEqual(len(rt.requests), 1)
         rt.press("SELECT")
         self.assertEqual(len(rt.requests), 2)
         rt.press("SELECT")
@@ -1144,7 +997,6 @@ class RefreshTests(AppCase):
         other = other_payload()
         rt = self.launched(Reply(self.payload), Reply(self.payload, hold=True), Reply(other))
         rt.press("SELECT")
-        rt.press("SELECT")
         self.assertEqual(len(rt.requests), 2)
         rt.enter_user("octocat")
         rt.frames_for(10)
@@ -1155,14 +1007,12 @@ class RefreshTests(AppCase):
         self.assertEqual(len(rt.requests), 3)
         self.assertEqual(rt.requests[2].url, "https://github.com/octocat.contribs")
         self.assertIn("@octocat", rt.texts())
-        rt.press("BACK")
         self.assertIn(summary_text(other["total_contributions"]), rt.texts())
         self.assertEqual(rt.read_json(CACHE_FILE)["h"], "octocat")
         self.assertFalse(rt.exists(DOWNLOAD_FILE))
 
     def test_a_late_reply_for_the_previous_user_is_cleaned_up_even_if_nothing_replaces_it(self):
         rt = self.launched(Reply(self.payload), Reply(self.payload, hold=True), Reply(other_payload()))
-        rt.press("SELECT")
         rt.press("SELECT")
         self.assertEqual(len(rt.requests), 2)
         rt.enter_user("octocat")
@@ -1209,11 +1059,7 @@ class MissingWifiTests(AppCase):
         self.assertEqual(footer(rt), ("Wi-Fi isn't set up - showing saved data", rt.namespace["MUTED"]))
         rt.wait(40 * MINUTE, step=2 * SECOND)
         rt.press("SELECT")
-        rt.press("SELECT")
-        self.assertIn("Busiest day", rt.texts())
-        self.assertEqual(footer(rt), ("Wi-Fi isn't set up - showing saved data", rt.namespace["MUTED"]))
         self.assertEqual(rt.requests, [])
-        rt.press("BACK")
         rt.press("LEFT")
         self.assertIn(date_text(359), rt.texts())
 
@@ -1331,84 +1177,48 @@ class CentringTests(AppCase):
 
 class GraphLayoutTests(AppCase):
     def test_cells_are_sized_and_centred_for_any_number_of_weeks(self):
-        for weeks in (1, 2, 20, 30, 31, 45, 53, 54):
+        for weeks in (1, 2, 20, 45, 46, 53, 54):
             with self.subTest(weeks=weeks):
                 with tempfile.TemporaryDirectory() as root:
                     payload = payloads.build(weeks=weeks, last_week_days=7)
                     rt = self.launched(Reply(payload), root=root)
-                    ns = rt.namespace
-                    palette = ns["LEVEL_COLORS"]
-                    expected = {cell_xy(week["index"] * 7 + day["weekday"], weeks) + (palette[day["level"]],)
+                    pitch = min(6, 318 // weeks)
+                    left = (320 - (weeks * pitch - 1)) // 2
+                    top = rt.namespace["GRAPH_Y"]
+                    palette = rt.namespace["LEVEL_COLORS"]
+                    expected = {(left + week["index"] * pitch, top + day["weekday"] * pitch, palette[day["level"]])
                                 for week in payload["weeks"] for day in week["contribution_days"]}
-                    drawn = {(r[1], r[2], r[5]) for r in rt.rects() if (r[3], r[4]) == (CELL, CELL)}
+                    drawn = {(r[1], r[2], r[5]) for r in rt.rects() if (r[3], r[4]) == (pitch - 1, pitch - 1)}
                     self.assertEqual(len(drawn), weeks * 7)
                     self.assertEqual(drawn, expected)
-                    left = min(x for x, _, _ in drawn)
-                    right = 320 - (max(x for x, _, _ in drawn) + CELL)
-                    self.assertIn(right - left, (0, 1))
-                    self.assertGreaterEqual(left, ns["MARGIN"])
-                    self.assertLess(max(y for _, y, _ in drawn) + CELL, ns["DAY_Y"])
 
     def month_labels(self, rt):
         return [op for op in rt.screen.ops if op[0] == "text" and op[1] in MONTHS]
 
-    def rows(self, rt):
-        """The month labels above each band, top band first, each row left to right."""
-        rows = {}
-        for op in self.month_labels(rt):
-            rows.setdefault(op[3], []).append(op)
-        return [sorted(rows[y], key=lambda op: op[2]) for y in sorted(rows)]
+    def assertLabelsApart(self, rt, labels):
+        """Every label ends at least two pixels before the next one starts."""
+        labels = sorted(labels, key=lambda op: op[2])
+        for (_, text, x, _, size, _), (_, _, next_x, _, _, _) in zip(labels, labels[1:]):
+            self.assertLessEqual(x + rt.screen.measure_text(text, size)[0], next_x - 2 + 0.01, (text, size))
 
-    def assertLabelsApart(self, rt):
-        """In each row, every label ends at least two pixels before the next one starts."""
-        for row in self.rows(rt):
-            for (_, text, x, _, size, _), (_, _, next_x, _, _, _) in zip(row, row[1:]):
-                self.assertLessEqual(x + rt.screen.measure_text(text, size)[0], next_x - 2 + 0.01, (text, size))
-
-    def test_month_labels_are_grey_text_above_each_band(self):
+    def test_month_labels_are_grey_text_in_the_row_above_the_graph(self):
         rt = self.launched(Reply(self.payload))
-        ns = rt.namespace
-        per_band, left = graph_columns(53)
-        rows = self.rows(rt)
-        self.assertEqual([len(row) for row in rows], [6, 6])
-        for band, row in enumerate(rows):
-            for _, text, x, y, size, pen in row:
-                with self.subTest(text):
-                    top = ns["GRAPH_Y"] + band * ns["BAND_STEP"]
-                    self.assertEqual((y, pen), (ns["MONTHS_Y"] + band * ns["BAND_STEP"], ns["MUTED"]))
-                    self.assertLessEqual(y + size, top - 1)
-                    # A month is named over the first week of the band that starts in it.
-                    column, rest = divmod(x - left, 10)
-                    self.assertEqual(rest, 0)
-                    sunday = payloads.FIRST_SUNDAY + datetime.timedelta(weeks=band * per_band + column)
-                    self.assertEqual(MONTHS[sunday.month - 1], text)
-                    if column:
-                        self.assertNotEqual((sunday - datetime.timedelta(weeks=1)).month, sunday.month)
-        self.assertGreater(rows[1][0][3], ns["GRAPH_Y"] + 7 * 10)
-
-    def test_a_short_graph_keeps_its_labels_in_one_row(self):
-        rt = self.launched(Reply(payloads.build(weeks=30, last_week_days=7)))
-        rows = self.rows(rt)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0][0][3], rt.namespace["MONTHS_Y"])
-        self.assertGreaterEqual(len(rows[0]), 6)
+        labels = self.month_labels(rt)
+        self.assertEqual(len(labels), 12)
+        for _, text, _, y, _, pen in labels:
+            self.assertEqual((y, pen), (rt.namespace["MONTHS_Y"], rt.namespace["MUTED"]), text)
 
     def test_a_month_that_starts_in_the_last_column_gets_no_label(self):
-        # Both bands end on the first week of a month: May 3 on the top one, November 1 on the bottom one.
+        # The last week starts on Sunday 1 November: a label there would run off the screen.
         payload = payloads.build(first_sunday=datetime.date(2025, 11, 2))
-        top = ["Nov", "Dec", "Jan", "Feb", "Mar", "Apr"]
-        bottom = ["May", "Jun", "Jul", "Aug", "Sep", "Oct"]
-        fonts = (("a narrow font", None, [top + ["May"], bottom + ["Nov"]]),
-                 ("a font too wide for them", lambda text, size: len(text) * size * 1.5, [top, bottom]))
-        for name, measure, expected in fonts:
+        for name, measure in (("a narrow font", None), ("a wide font", pessimistic)):
             with self.subTest(name):
                 with tempfile.TemporaryDirectory() as root:
                     rt = self.launched(Reply(payload), root=root, measure=measure)
-                    rows = self.rows(rt)
-                    self.assertEqual([[op[1] for op in row] for row in rows], expected)
-                    for row in rows:
-                        for _, text, x, _, size, _ in row:
-                            self.assertLessEqual(x + rt.screen.measure_text(text, size)[0], 318, text)
+                    labels = self.month_labels(rt)
+                    self.assertEqual([op[1] for op in labels], list(MONTHS[10:] + MONTHS[:10]))
+                    for _, text, x, _, size, _ in labels:
+                        self.assertLessEqual(x + rt.screen.measure_text(text, size)[0], 318, text)
 
     def test_month_labels_keep_their_size_when_there_is_room(self):
         rt = self.launched(Reply(self.payload))
@@ -1419,49 +1229,44 @@ class GraphLayoutTests(AppCase):
         self.assertEqual([(op[1], op[4]) for op in self.month_labels(rt)], [("Oct", rt.namespace["SMALL"])])
 
     def test_month_labels_shrink_just_enough_to_stay_apart(self):
-        # Labels can be just four columns (40 pixels) apart, which only a very wide font fills.
-        fonts = (("narrow", None), ("wide", lambda text, size: len(text) * size * 1.2),
-                 ("very wide", lambda text, size: len(text) * size * 1.4))
+        # A 54-week graph puts some labels only four columns (20 pixels) apart.
+        payload = payloads.build(weeks=54, last_week_days=1)
+        fonts = (("narrow", None), ("average", pessimistic), ("wide", lambda text, size: len(text) * size * 0.7))
         for name, measure in fonts:
             with self.subTest(name):
                 with tempfile.TemporaryDirectory() as root:
-                    rt = self.launched(Reply(self.payload), root=root, measure=measure)
+                    rt = self.launched(Reply(payload), root=root, measure=measure)
                     labels = self.month_labels(rt)
-                    self.assertEqual(len(labels), 12)
-                    self.assertLabelsApart(rt)
-                    sizes = {op[4] for op in labels}
-                    self.assertEqual(len(sizes), 1)
-                    size = sizes.pop()
-                    if measure is None:
-                        self.assertEqual(size, rt.namespace["SMALL"])
-                        continue
-                    self.assertTrue(8 <= size < rt.namespace["SMALL"], size)
-                    gaps = [next_x - 2 - (x + measure(text, size))
-                            for row in self.rows(rt) for (_, text, x, _, _, _), (_, _, next_x, _, _, _)
-                            in zip(row, row[1:])]
-                    self.assertAlmostEqual(min(gaps), 0)
+                    self.assertGreaterEqual(len(labels), 11)
+                    self.assertLabelsApart(rt, labels)
+                    for _, text, _, _, size, _ in labels:
+                        self.assertTrue(8 <= size <= rt.namespace["SMALL"], (text, size))
+                    if measure is not None:
+                        self.assertLess(labels[0][4], rt.namespace["SMALL"])
 
     def test_month_labels_are_not_shrunk_below_the_smallest_size(self):
         # In a font this wide even the smallest size runs into the next label. Keep them readable instead.
-        rt = self.launched(Reply(self.payload), measure=lambda text, size: len(text) * size * 2)
+        rt = self.launched(Reply(payloads.build(weeks=54, last_week_days=1)),
+                           measure=lambda text, size: len(text) * size)
         labels = self.month_labels(rt)
-        self.assertGreaterEqual(len(labels), 10)
+        self.assertGreaterEqual(len(labels), 11)
         self.assertEqual({op[4] for op in labels}, {8})
 
     def test_the_tightest_pair_decides_the_size_wherever_it_is_in_the_row(self):
-        names = [[op[1] for op in row] for row in self.rows(self.launched(Reply(self.payload)))]
-        for band, row in enumerate(names):
-            for position, wide in enumerate(row[:-1]):
-                with self.subTest(wide=wide):
-                    with tempfile.TemporaryDirectory() as root:
-                        # One label is a lot wider than the rest, so only the gap after it is too tight.
-                        rt = self.launched(Reply(self.payload), root=root,
-                                           measure=lambda text, size: size * (4.5 if text == wide else 1.0))
-                        rows = self.rows(rt)
-                        self.assertEqual([[op[1] for op in r] for r in rows], names)
-                        self.assertEqual(len({op[4] for op in self.month_labels(rt)}), 1)
-                        _, _, x, _, size, _ = rows[band][position]
-                        self.assertAlmostEqual(x + 4.5 * size, rows[band][position + 1][2] - 2)
+        payload = payloads.build(weeks=54, last_week_days=1)
+        names = [name for _, name in logic.month_labels(logic.parse_contribs(payload, "octocat"))]
+        for position in range(len(names) - 1):
+            wide = names[position]
+            with self.subTest(wide=wide, position=position):
+                with tempfile.TemporaryDirectory() as root:
+                    # One label is a lot wider than the rest, so only the pair it starts can be too tight.
+                    rt = self.launched(Reply(payload), root=root,
+                                       measure=lambda text, size: size * (2.2 if text == wide else 1.0))
+                    labels = self.month_labels(rt)
+                    self.assertEqual([op[1] for op in labels], names)
+                    self.assertEqual(len({op[4] for op in labels}), 1)
+                    _, _, x, _, size, _ = labels[position]
+                    self.assertAlmostEqual(x + 2.2 * size, labels[position + 1][2] - 2)
 
     def test_labels_stay_apart_however_the_months_fall(self):
         # Over 28 years every combination of month lengths and weekdays comes round.
@@ -1469,9 +1274,8 @@ class GraphLayoutTests(AppCase):
         sunday = datetime.date(2024, 1, 7)
         for _ in range(28 * 52 + 2):
             start = logic.days_from_civil(sunday.year, sunday.month, sunday.day)
-            graph = types.SimpleNamespace(start=start, weeks=54)
-            labels = logic.month_labels(graph, stop=27) + logic.month_labels(graph, first=27)
-            arrangements.setdefault(tuple(week for week, _ in labels), sunday)
+            columns = tuple(week for week, _ in logic.month_labels(types.SimpleNamespace(start=start, weeks=54)))
+            arrangements.setdefault(columns, sunday)
             sunday += datetime.timedelta(weeks=1)
         self.assertGreater(len(arrangements), 100)
         rt = self.launch(measure=pessimistic)
@@ -1480,17 +1284,12 @@ class GraphLayoutTests(AppCase):
                 graph = logic.parse_contribs(payloads.build(first_sunday=first, weeks=54, last_week_days=1), "octocat")
                 view = rt.namespace["GraphView"](graph, "octocat")
                 self.assertEqual(len(view.labels), len(columns))
-                rows = {}
-                for x, y, name in view.labels:
-                    rows.setdefault(y, []).append((x, name))
-                self.assertEqual(len(rows), 2)
-                for row in rows.values():
-                    for (x, name), (next_x, _) in zip(row, row[1:]):
-                        self.assertLessEqual(x + rt.screen.measure_text(name, view.label_size)[0], next_x - 2 + 0.01)
+                for (x, name), (next_x, _) in zip(view.labels, view.labels[1:]):
+                    self.assertLessEqual(x + rt.screen.measure_text(name, view.label_size)[0], next_x - 2 + 0.01)
 
 
 class GraphDetailsTests(AppCase):
-    def test_the_day_line_matches_the_level_of_the_selected_day(self):
+    def test_the_day_panel_matches_the_level_of_the_selected_day(self):
         counts = {366: 0, 365: 2, 364: 5, 363: 9, 362: 14}
         rt = self.launched(Reply(payloads.build(count_for=lambda i: counts.get(i, 0))))
         ns = rt.namespace
@@ -1498,35 +1297,15 @@ class GraphDetailsTests(AppCase):
             with self.subTest(level=level):
                 self.assertEqual(payloads.level_for(counts[index]), level)
                 self.assertEqual(rt.app.cursor, index)
-                swatch = [op for op in rt.rects() if (op[3], op[4]) == (11, 11)]
+                swatch = [op for op in rt.rects() if (op[3], op[4]) == (14, 14)]
                 self.assertEqual(len(swatch), 1)
-                self.assertEqual(swatch[0][1:3], (ns["MARGIN"], ns["DAY_Y"] + 1))
                 self.assertEqual(swatch[0][5], ns["LEVEL_COLORS"][level])
-                self.assertEqual(text_op(rt, date_text(index))[4], ns["TEXT"])
+                self.assertTrue(ns["PANEL_Y"] <= swatch[0][2] < ns["PANEL_Y"] + ns["PANEL_H"])
                 self.assertEqual(text_op(rt, count_text(counts[index]))[4], ns["LIME"] if level else ns["MUTED"])
                 rt.press("UP")
 
-    def test_the_count_sits_at_the_right_edge_clear_of_the_date(self):
-        for name, count in (("one", 1), ("a few", 25), ("huge", 123456)):
-            with self.subTest(name):
-                with tempfile.TemporaryDirectory() as root:
-                    rt = self.launched(Reply(payloads.build(count_for=lambda i: count)), root=root,
-                                       measure=pessimistic)
-                    ns = rt.namespace
-                    date = date_text(366)
-                    _, date_x, date_y, date_size, _ = text_op(rt, date)
-                    _, x, y, size, _ = text_op(rt, count_text(count))
-                    self.assertEqual((date_x, date_y, date_size), (ns["MARGIN"] + 17, ns["DAY_Y"], ns["DAY_SIZE"]))
-                    self.assertAlmostEqual(x + pessimistic(count_text(count), size), 320 - ns["MARGIN"])
-                    self.assertGreaterEqual(x, date_x + pessimistic(date, date_size) + 10 - 1e-9)
-                    self.assertAlmostEqual(y + size / 2, date_y + date_size / 2)
-                    self.assertTrue(9 <= size <= date_size, size)
-                    if count < 100:
-                        self.assertEqual(size, date_size)
-
     def test_the_legend_runs_from_the_palest_to_the_darkest_shade(self):
         rt = self.launched(Reply(self.payload))
-        rt.press("SELECT")
         ns = rt.namespace
         swatches = sorted((op[1], op[2], op[5]) for op in rt.rects() if (op[3], op[4]) == (8, 8))
         self.assertEqual([s[2] for s in swatches], list(ns["LEVEL_COLORS"]))
@@ -1539,37 +1318,24 @@ class GraphDetailsTests(AppCase):
         self.assertAlmostEqual(swatches[-1][0] + 8 + 4, more_x)
         self.assertAlmostEqual(more_x + rt.screen.measure_text("More", size)[0], 320 - ns["MARGIN"])
 
-    def tile_texts(self, rt):
-        """For each panel on the stats page, the text ops inside it from top to bottom."""
-        texts = [op for op in rt.screen.ops if op[0] == "text"]
-        panels = [op[1] for op in rt.screen.ops if op[0] == "shape"]
-        self.assertEqual(len(panels), 4)
-        return [(panel, sorted((t for t in texts if x <= t[2] < x + w and y <= t[3] < y + h), key=lambda t: t[3]))
-                for panel in panels for _, x, y, w, h, _ in [panel]]
-
-    def test_the_numbers_on_the_stats_page_are_bright_and_their_words_grey(self):
-        rt = self.launched(Reply(payloads.build(count_for=lambda i: 1 + i % 3)))
-        rt.press("SELECT")
+    def test_the_numbers_under_the_graph_are_bright_and_their_labels_grey(self):
+        rt = self.launched(Reply(self.payload))
         ns = rt.namespace
-        for (_, inside), label in zip(self.tile_texts(rt), TILE_LABELS):
-            with self.subTest(label):
-                self.assertEqual(inside[0][1], label)
-                self.assertEqual([t[5] for t in inside], [ns["MUTED"], ns["LIME"], ns["MUTED"]])
-                self.assertGreater(inside[1][4], inside[0][4])
+        texts = [op for op in rt.screen.ops if op[0] == "text"]
+        self.assertEqual([op[5] for op in texts if op[3] == ns["STATS_Y"]], [ns["LIME"]] * 3)
+        self.assertEqual([op[5] for op in texts if op[3] == ns["STATS_Y"] + 24], [ns["MUTED"]] * 3)
 
-    def test_every_word_and_number_stays_inside_its_panel(self):
-        for name, count in (("a year of activity", 1), ("huge numbers", 123456), ("nothing", 0)):
+    def test_each_number_stays_inside_its_own_column(self):
+        for name, count in (("a year of activity", 1), ("huge numbers", 123456)):
             with self.subTest(name):
                 with tempfile.TemporaryDirectory() as root:
-                    rt = self.launched(Reply(payloads.build(count_for=lambda i: count)), root=root,
-                                       measure=pessimistic)
-                    rt.press("SELECT")
-                    for (_, x, y, w, h, _), inside in self.tile_texts(rt):
-                        self.assertGreaterEqual(len(inside), 2)
-                        for _, text, tx, ty, size, _ in inside:
-                            self.assertGreaterEqual(tx, x + 10, text)
-                            self.assertLessEqual(tx + pessimistic(text, size), x + w - 10 + 1e-9, text)
-                            self.assertLessEqual(ty + size, y + h, text)
+                    payload = payloads.build(count_for=lambda i: count)
+                    rt = self.launched(Reply(payload), root=root, measure=pessimistic)
+                    ns = rt.namespace
+                    numbers = [op for op in rt.screen.ops if op[0] == "text" and op[3] == ns["STATS_Y"]]
+                    self.assertEqual(len(numbers), 3)
+                    for _, text, _, _, size, _ in numbers:
+                        self.assertLessEqual(pessimistic(text, size), ns["STAT_WIDTH"] - 4 + 1e-9, text)
 
     def test_the_loading_screen_colours(self):
         rt = self.launched(Reply(error=OSError("ETIMEDOUT")))
@@ -1703,24 +1469,10 @@ class ScreenFitTests(AppCase):
                 apart = ax1 <= bx0 or bx1 <= ax0 or ay1 <= by0 or by1 <= ay0
                 self.assertTrue(apart, (name, a, b))
 
-    def assertClearOfBlocks(self, rt, name):
-        """No text on the graph or stats page touches a square or dot."""
-        rects = [op for op in rt.screen.ops if op[0] == "rect"]
-        for op in rt.screen.ops:
-            if op[0] == "text":
-                _, text, x, y, size, _ = op
-                right = x + pessimistic(text, size)
-                for rect in rects:
-                    _, rx, ry, rw, rh, _ = rect
-                    apart = right <= rx or rx + rw <= x or y + size <= ry or ry + rh <= y
-                    self.assertTrue(apart, (name, op, rect))
-
     def test_graph_screens(self):
         cases = (
             ("default", {}),
             ("fifty-four weeks", {"weeks": 54, "last_week_days": 7}),
-            ("thirty weeks", {"weeks": 30, "last_week_days": 7}),
-            ("thirty-one weeks", {"weeks": 31, "last_week_days": 7}),
             ("one week", {"weeks": 1}),
             ("a single day", {"weeks": 1, "last_week_days": 1}),
             ("huge totals", {"count_for": lambda i: 3000}),
@@ -1734,25 +1486,15 @@ class ScreenFitTests(AppCase):
                 with tempfile.TemporaryDirectory() as root:
                     rt = self.launched(Reply(payloads.build(**options)), root=root, measure=pessimistic)
                     self.assertFits(rt, name)
-                    self.assertClearOfBlocks(rt, name)
                     for button in ("LEFT", "UP", "UP", "BACK"):
                         rt.press(button)
                         self.assertFits(rt, name + " " + button)
-                        self.assertClearOfBlocks(rt, name + " " + button)
-                    rt.press("SELECT")
-                    self.assertEqual(rt.app.page, rt.namespace["STATS_PAGE"])
-                    self.assertFits(rt, name + " stats")
-                    self.assertClearOfBlocks(rt, name + " stats")
 
-    def test_a_long_user_name_on_both_pages(self):
+    def test_a_long_user_name_on_the_graph(self):
         rt = self.launched(Reply(self.payload), state={"handle": "a" * 39}, measure=pessimistic)
         self.assertIsNotNone(rt.app.graph)
         self.assertIn("@" + "a" * 39, rt.texts())
         self.assertFits(rt, "graph")
-        self.assertClearOfBlocks(rt, "graph")
-        rt.press("SELECT")
-        self.assertFits(rt, "stats")
-        self.assertClearOfBlocks(rt, "stats")
 
     def test_loading_and_problem_screens(self):
         name = "a" * 39
@@ -1811,10 +1553,8 @@ class ScreenFitTests(AppCase):
         rt.frames_for(2)
         self.assertFits(rt, "wifi setup backdrop")
 
-    def test_both_pages_stay_within_their_drawing_budget(self):
+    def test_the_graph_screen_stays_within_its_drawing_budget(self):
         rt = self.launched(Reply(self.payload))
-        self.assertLess(len(rt.screen.ops), 450)
-        rt.press("SELECT")
         self.assertLess(len(rt.screen.ops), 450)
 
 

@@ -42,9 +42,7 @@ REFRESH_MS = 30 * 60 * 1000
 MAX_DOWNLOAD_BYTES = 64 * 1024
 WIFI_TIMEOUT = 10
 WIFI_RETRIES = 100000
-GRAPH_PAGE = 0
-STATS_PAGE = 1
-HINTS = ("SELECT stats   MENU change user", "BACK graph   SELECT refresh   MENU user")
+HINT = "MENU change user   SELECT refresh"
 
 BG = color.rgb(13, 17, 23)
 PANEL = color.rgb(22, 27, 34)
@@ -64,42 +62,31 @@ LEVEL_COLORS = (
 
 WIDTH = screen.width
 MARGIN = 8
-TITLE_SIZE = 18
-SUMMARY_SIZE = 12
-DAY_SIZE = 13
-STAT_SIZE = 26
+TITLE_SIZE = 20
+SUMMARY_SIZE = 13
+STAT_SIZE = 20
 SMALL = 11
 HINT_SIZE = 12
 
-# Graph page: a year is drawn as two bands of weeks, one above the other. Up to BAND_WEEKS fit in one band.
-TITLE_Y = 4
-SUMMARY_Y = 24
-MONTHS_Y = 39
-GRAPH_Y = 52
-PITCH = 10
-BAND_WEEKS = (WIDTH - 2 * MARGIN + 1) // PITCH
-BAND_STEP = 85
-DAY_Y = 209
-DAY_SWATCH = 11
-FOOTER_Y = 224
-DOT = 6
-
-# Stats page: four tiles in a 2 x 2 grid, then the colour legend.
-TILE_GAP = 8
-TILE_W = (WIDTH - 2 * MARGIN - TILE_GAP) // 2
-TILE_H = 76
-TILE_ROWS = (32, 114)
-LEGEND_Y = 197
+TITLE_Y = 6
+SUMMARY_Y = 31
+MONTHS_Y = 51
+GRAPH_Y = 64
+LEGEND_Y = 111
 LEGEND_CELL = 8
 LEGEND_GAP = 3
+PANEL_Y = 130
+PANEL_H = 42
+STATS_Y = 181
+FOOTER_Y = 224
+STAT_WIDTH = (WIDTH - 2 * MARGIN) // 3
 
 FIELD_X, FIELD_Y, FIELD_W, FIELD_H = MARGIN, 28, WIDTH - 2 * MARGIN, 36
 KEY_W, KEY_H, KEY_PITCH_X, KEY_PITCH_Y = 28, 29, 30, 31
 KEYS_X = (WIDTH - (logic.KEY_COLUMNS * KEY_PITCH_X - 2)) // 2
 KEYS_Y = 86
 
-TILE_POSITIONS = [(MARGIN + column * (TILE_W + TILE_GAP), y) for y in TILE_ROWS for column in range(2)]
-TILE_SHAPES = [shape.rounded_rectangle(x, y, TILE_W, TILE_H, 6) for x, y in TILE_POSITIONS]
+PANEL_SHAPE = shape.rounded_rectangle(MARGIN, PANEL_Y, WIDTH - 2 * MARGIN, PANEL_H, 6)
 FIELD_SHAPE = shape.rounded_rectangle(FIELD_X, FIELD_Y, FIELD_W, FIELD_H, 6)
 KEY_POSITIONS = [
     (KEYS_X + (i % logic.KEY_COLUMNS) * KEY_PITCH_X, KEYS_Y + (i // logic.KEY_COLUMNS) * KEY_PITCH_Y)
@@ -191,35 +178,31 @@ class GraphView:
     def __init__(self, graph, handle):
         self.graph = graph
         weeks = graph.weeks
-        self.split = weeks if weeks <= BAND_WEEKS else (weeks + 1) // 2
-        self.x0 = (WIDTH - (self.split * PITCH - 1)) // 2
-        self.groups = logic.layout_cells(graph, self.x0, GRAPH_Y, PITCH, self.split, BAND_STEP)
+        self.pitch = min(6, (WIDTH - 2) // weeks)
+        self.cell = self.pitch - 1
+        self.x0 = (WIDTH - (weeks * self.pitch - 1)) // 2
+        self.groups = logic.layout_cells(graph, self.x0, GRAPH_Y, self.pitch)
 
+        labels = []
+        for week, name in logic.month_labels(graph):
+            x = self.x0 + week * self.pitch
+            width, _ = screen.measure_text(name, font_size=SMALL)
+            if x + width <= WIDTH - 2:
+                labels.append((x, name))
+        # Labels sit as little as four columns apart on a 54-week graph; shrink them just enough to keep clear.
         self.label_size = SMALL
-        self.labels = []
-        for band, first, stop in ((0, 0, self.split), (1, self.split, weeks)):
-            row = []
-            for week, name in logic.month_labels(graph, first=first, stop=stop):
-                x = self.x0 + (week - first) * PITCH
-                width, _ = screen.measure_text(name, font_size=SMALL)
-                if x + width <= WIDTH - 2:
-                    row.append((x, name))
-            # Labels can sit just four columns apart; shrink them all just enough to keep clear.
-            for i in range(len(row) - 1):
-                room = row[i + 1][0] - row[i][0] - 2
-                self.label_size = min(self.label_size, fit_size(row[i][1], SMALL, room, 8))
-            y = MONTHS_Y + band * BAND_STEP
-            for x, name in row:
-                self.labels.append((x, y, name))
+        for i in range(len(labels) - 1):
+            room = labels[i + 1][0] - labels[i][0] - 2
+            self.label_size = min(self.label_size, fit_size(labels[i][1], SMALL, room, 8))
+        self.labels = labels
 
         self.title = "@" + handle
-        self.title_size = fit_size(self.title, TITLE_SIZE, WIDTH - 2 * MARGIN - 2 * DOT - 12, 10)
+        self.title_size = fit_size(self.title, TITLE_SIZE, WIDTH - 2 * MARGIN, 12)
         self.summary = logic.summary_text(graph)
         self.summary_size = fit_size(self.summary, SUMMARY_SIZE, WIDTH - 2 * MARGIN, 9)
         self.as_of = "as of " + logic.short_date(graph.day(graph.last))
-        self.tiles = logic.stat_tiles(graph, logic.compute_stats(graph))
-        self.value_sizes = [fit_size(value, STAT_SIZE, TILE_W - 20, 12) for _, value, _ in self.tiles]
-        self.note_sizes = [fit_size(note, SMALL, TILE_W - 20, 8) for _, _, note in self.tiles]
+        self.stats = logic.stat_lines(logic.compute_stats(graph))
+        self.stat_sizes = [fit_size(value, STAT_SIZE, STAT_WIDTH - 4, 12) for value, _ in self.stats]
 
         less_width, _ = screen.measure_text("Less", font_size=SMALL)
         more_width, _ = screen.measure_text("More", font_size=SMALL)
@@ -235,12 +218,8 @@ class GraphView:
         self.day_date, self.day_count = logic.day_lines(self.graph, index)
         level = self.graph.levels[index]
         self.day_level = 0 if level == logic.NO_DATA else int(level)
-        self.cx, self.cy = logic.cell_xy(index, self.x0, GRAPH_Y, PITCH, self.split, BAND_STEP)
-        date_width, _ = screen.measure_text(self.day_date, font_size=DAY_SIZE)
-        room = WIDTH - 2 * MARGIN - (DAY_SWATCH + 6) - date_width - 10
-        self.count_size = fit_size(self.day_count, DAY_SIZE, room, 9)
-        count_width, _ = screen.measure_text(self.day_count, font_size=self.count_size)
-        self.count_x = WIDTH - MARGIN - count_width
+        self.cx = self.x0 + (index // 7) * self.pitch
+        self.cy = GRAPH_Y + (index % 7) * self.pitch
 
 
 class App:
@@ -254,7 +233,6 @@ class App:
         self.handle = handle if logic.valid_handle(handle) else logic.DEFAULT_HANDLE
         self.graph = read_cache(self.handle)
         self.view = None
-        self.page = GRAPH_PAGE
         self.cursor = 0
         self.editor = None
         self.request = None
@@ -304,25 +282,18 @@ class App:
         right = fire(self.rep_right, BUTTON_RIGHT)
         up = fire(self.rep_up, BUTTON_UP)
         down = fire(self.rep_down, BUTTON_DOWN)
-        select = badge.pressed(BUTTON_SELECT)
-        back = badge.pressed(BUTTON_BACK)
-        if self.graph is not None and self.page == GRAPH_PAGE:
+        if self.graph is not None:
             step = -7 if left else 7 if right else -1 if up else 1 if down else 0
             if step:
                 moved = logic.move_cursor(self.graph, self.cursor, step)
                 if moved != self.cursor:
                     self.cursor = moved
                     self.view.select(moved)
-            if back:
+            if badge.pressed(BUTTON_BACK):
                 self.cursor = self.graph.last
                 self.view.select(self.cursor)
-            if select:
-                self.page = STATS_PAGE
-        else:
-            if back:
-                self.page = GRAPH_PAGE
-            if select:
-                self.refresh_now()
+        if badge.pressed(BUTTON_SELECT):
+            self.refresh_now()
         if badge.pressed(BUTTON_MENU):
             self.open_editor(self.handle)
 
@@ -492,15 +463,12 @@ class App:
     def draw(self):
         if self.editor is not None:
             self.draw_editor()
-        elif self.graph is None:
-            if MISSING:
-                missing_details.show(MISSING, self.draw_backdrop)
-            else:
-                self.draw_loading()
-        elif self.page == STATS_PAGE:
-            self.draw_stats()
-        else:
+        elif self.graph is not None:
             self.draw_graph()
+        elif MISSING:
+            missing_details.show(MISSING, self.draw_backdrop)
+        else:
+            self.draw_loading()
 
     def draw_backdrop(self):
         screen.pen = BG
@@ -521,29 +489,23 @@ class App:
             return headline + " - MENU change user", RED
         if MISSING:
             return "Wi-Fi isn't set up - showing saved data", MUTED
-        return HINTS[self.page], MUTED
+        return HINT, MUTED
 
     def draw_footer(self):
         text, pen = self.footer()
         draw_text(text, MARGIN, FOOTER_Y, fit_size(text, HINT_SIZE, WIDTH - 2 * MARGIN, 9), pen)
 
-    def draw_header(self, v):
-        """Clear the screen, then draw the user's name and a dot for each page."""
-        screen.pen = BG
-        screen.clear()
-        draw_text(v.title, MARGIN, TITLE_Y, v.title_size, TEXT)
-        for page in (GRAPH_PAGE, STATS_PAGE):
-            screen.pen = LIME if page == self.page else MUTED
-            screen.rectangle(WIDTH - MARGIN - DOT - (STATS_PAGE - page) * (DOT + 4), TITLE_Y + 7, DOT, DOT)
-
     def draw_graph(self):
         v = self.view
-        self.draw_header(v)
-        draw_text(v.summary, MARGIN, SUMMARY_Y, v.summary_size, MUTED)
-        for x, y, name in v.labels:
-            draw_text(name, x, y, v.label_size, MUTED)
+        screen.pen = BG
+        screen.clear()
 
-        size = PITCH - 1
+        draw_text(v.title, MARGIN, TITLE_Y, v.title_size, TEXT)
+        draw_text(v.summary, MARGIN, SUMMARY_Y, v.summary_size, MUTED)
+        for x, name in v.labels:
+            draw_text(name, x, MONTHS_Y, v.label_size, MUTED)
+
+        size = v.cell
         for level in range(5):
             screen.pen = LEVEL_COLORS[level]
             for x, y in v.groups[level]:
@@ -555,33 +517,25 @@ class App:
         screen.rectangle(v.cx - 1, v.cy, 1, size)
         screen.rectangle(v.cx + size, v.cy, 1, size)
 
-        screen.pen = LEVEL_COLORS[v.day_level]
-        screen.rectangle(MARGIN, DAY_Y + 1, DAY_SWATCH, DAY_SWATCH)
-        draw_text(v.day_date, MARGIN + DAY_SWATCH + 6, DAY_Y, DAY_SIZE, TEXT)
-        draw_text(v.day_count, v.count_x, DAY_Y + (DAY_SIZE - v.count_size) / 2, v.count_size,
-                  LIME if v.day_level else MUTED)
-
-        self.draw_footer()
-
-    def draw_stats(self):
-        v = self.view
-        self.draw_header(v)
-        for i in range(4):
-            x, y = TILE_POSITIONS[i]
-            label, value, note = v.tiles[i]
-            screen.pen = PANEL
-            screen.shape(TILE_SHAPES[i])
-            draw_text(label, x + 10, y + 8, HINT_SIZE, MUTED)
-            draw_text(value, x + 10, y + 26, v.value_sizes[i], LIME)
-            if note:
-                draw_text(note, x + 10, y + 58, v.note_sizes[i], MUTED)
-
         draw_text(v.as_of, MARGIN, LEGEND_Y, SMALL, MUTED)
         draw_text("Less", v.less_x, LEGEND_Y, SMALL, MUTED)
         for level in range(5):
             screen.pen = LEVEL_COLORS[level]
             screen.rectangle(v.swatch_x + level * (LEGEND_CELL + LEGEND_GAP), LEGEND_Y + 2, LEGEND_CELL, LEGEND_CELL)
         draw_text("More", v.more_x, LEGEND_Y, SMALL, MUTED)
+
+        screen.pen = PANEL
+        screen.shape(PANEL_SHAPE)
+        draw_text(v.day_date, MARGIN + 10, PANEL_Y + 6, 15, TEXT)
+        draw_text(v.day_count, MARGIN + 10, PANEL_Y + 24, 13, LIME if v.day_level else MUTED)
+        screen.pen = LEVEL_COLORS[v.day_level]
+        screen.rectangle(WIDTH - MARGIN - 24, PANEL_Y + 14, 14, 14)
+
+        for i in range(3):
+            value, label = v.stats[i]
+            x = MARGIN + i * STAT_WIDTH
+            draw_text(value, x, STATS_Y, v.stat_sizes[i], LIME)
+            draw_text(label, x, STATS_Y + 24, SMALL, MUTED)
 
         self.draw_footer()
 

@@ -2,18 +2,10 @@
 
 Contribution Graph shows any GitHub user's yearly contribution heatmap, starting with RHSplinter.
 
-The app has two pages. Two small dots in the top-right corner show which one
-is open.
-
-- **Graph page:** the last year of contributions as the familiar grid of green
-  squares, one column per week. The year is split into two rows of half a year
-  each, so the squares can be larger (9 px). A shorter history fits on a single
-  row. Underneath is the highlighted day and its number of contributions.
-- **Stats page:** four tiles with the total contributions, busiest day, current
-  streak and longest streak, plus the colour legend and the date of the data.
-
-The default user is **RHSplinter**; you can switch to anyone else with an
-on-screen keyboard, and the badge remembers your choice.
+It draws the last year of contributions as the familiar grid of green squares,
+one column per week, and shows the current streak, longest streak and busiest
+day underneath. The default user is **RHSplinter**; you can switch to anyone
+else with an on-screen keyboard, and the badge remembers your choice.
 
 ## Usage
 
@@ -24,18 +16,17 @@ time, even when Wi-Fi is not available.
 
 ### Controls
 
-| Button | Graph page | Stats page | Keyboard |
-| --- | --- | --- | --- |
-| UP / DOWN | Previous / next day | - | Move the highlight up / down |
-| LEFT / RIGHT | Previous / next week | - | Move the highlight left / right |
-| SELECT | Open the stats page | Refresh now | Type the highlighted key |
-| BACK | Jump to the latest day | Back to the graph page | Delete a letter (cancel when empty) |
-| MENU | Change user | Change user | Cancel |
-| HOME | Return to the badge menu | Return to the badge menu | Return to the badge menu |
+| Button | On the graph | On the keyboard |
+| --- | --- | --- |
+| UP / DOWN | Previous / next day | Move the highlight up / down |
+| LEFT / RIGHT | Previous / next week | Move the highlight left / right |
+| SELECT | Refresh now | Type the highlighted key |
+| BACK | Jump to the latest day | Delete a letter (cancel when empty) |
+| MENU | Change user | Cancel |
+| HOME | Return to the badge menu | Return to the badge menu |
 
-Holding a direction button repeats it. The line under the graph shows the date
-and number of contributions for the highlighted day. Before the first graph has
-loaded, SELECT retries the download straight away.
+Holding a direction button repeats it. The panel under the graph shows the
+date and number of contributions for the highlighted day.
 
 ### Changing the user
 
@@ -81,9 +72,7 @@ Checked so far:
 - The static validator, for both the badge and the simulator, with no warnings.
 - Desktop tests that drive the app against a fake badge and run every line of
   both files.
-- The same code on MicroPython 1.29.0, giving the same results as desktop Python
-  on both pages.
-- The web simulator (https://badger.github.io/simulator): live data loads, the
-  graph page, stats page and keyboard draw, the cursor moves, SELECT on the
-  stats page refreshes, the user can be changed, an unknown user is rejected,
-  and the app recovers after being offline.
+- The same code on MicroPython 1.29.0, giving the same results as desktop Python.
+- The web simulator (https://badger.github.io/simulator): live data loads, both
+  screens draw, the cursor moves, the user can be changed, an unknown user is
+  rejected, and the app recovers after being offline.

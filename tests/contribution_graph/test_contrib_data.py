@@ -239,100 +239,44 @@ class StatsTests(unittest.TestCase):
         graph = make_graph([0, 1, 2, 0, 3, 3, 3,
                             0, 0, 5, 5, 0, 0, 0])
         self.assertEqual(logic.compute_stats(graph),
-                         {"current": 0, "longest": 3, "active": 7, "busiest": 5,
-                          "current_start": None, "longest_end": 6, "busiest_day": 10})
+                         {"current": 0, "longest": 3, "active": 7, "busiest": 5})
 
     def test_current_streak_ends_on_the_last_day(self):
         graph = make_graph([0, 0, 0, 0, 2, 1, 1,
                             1, 4, 1, 1])
         stats = logic.compute_stats(graph)
         self.assertEqual(stats["current"], 7)
-        self.assertEqual(stats["current_start"], 4)
         self.assertEqual(stats["longest"], 7)
-        self.assertEqual(stats["longest_end"], 10)
         self.assertEqual(stats["busiest"], 4)
-        self.assertEqual(stats["busiest_day"], 8)
 
     def test_an_empty_last_day_does_not_break_the_streak(self):
         stats = logic.compute_stats(make_graph([0, 5, 1, 2, 0]))
         self.assertEqual((stats["current"], stats["longest"]), (3, 3))
-        self.assertEqual((stats["current_start"], stats["longest_end"]), (1, 3))
 
     def test_two_empty_days_do_break_it(self):
-        stats = logic.compute_stats(make_graph([4, 4, 0, 0]))
-        self.assertEqual((stats["current"], stats["current_start"]), (0, None))
-
-    def test_a_streak_can_start_on_the_first_day(self):
-        stats = logic.compute_stats(make_graph([1, 2, 3]))
-        self.assertEqual((stats["current"], stats["current_start"]), (3, 0))
-
-    def test_ties_go_to_the_most_recent_day(self):
-        stats = logic.compute_stats(make_graph([3, 3, 0, 1, 1, 0, 0]))
-        self.assertEqual((stats["longest"], stats["longest_end"]), (2, 4))
-        self.assertEqual((stats["busiest"], stats["busiest_day"]), (3, 1))
+        self.assertEqual(logic.compute_stats(make_graph([4, 4, 0, 0]))["current"], 0)
 
     def test_no_contributions(self):
         stats = logic.compute_stats(make_graph([0] * 7))
-        self.assertEqual(stats, {"current": 0, "longest": 0, "active": 0, "busiest": 0,
-                                 "current_start": None, "longest_end": None, "busiest_day": None})
+        self.assertEqual(stats, {"current": 0, "longest": 0, "active": 0, "busiest": 0})
 
     def test_days_after_the_last_day_with_data_are_ignored(self):
         graph = make_graph([2, 3, 1], no_data_tail=4)
         self.assertEqual(graph.last, 2)
         self.assertEqual(logic.compute_stats(graph),
-                         {"current": 3, "longest": 3, "active": 3, "busiest": 3,
-                          "current_start": 0, "longest_end": 2, "busiest_day": 1})
+                         {"current": 3, "longest": 3, "active": 3, "busiest": 3})
 
     def test_days_before_the_first_day_with_data_are_ignored(self):
         graph = logic.Graph("x", SUNDAY, "...1100", [0, 0, 0, 4, 5, 0, 0])
         self.assertEqual(graph.first, 3)
         self.assertEqual(logic.compute_stats(graph),
-                         {"current": 0, "longest": 2, "active": 2, "busiest": 5,
-                          "current_start": None, "longest_end": 4, "busiest_day": 4})
+                         {"current": 0, "longest": 2, "active": 2, "busiest": 5})
 
-    def test_a_streak_reaching_back_to_the_first_day_with_data_stops_there(self):
-        graph = logic.Graph("x", SUNDAY, "...1111", [9, 9, 9, 4, 5, 1, 1])
-        stats = logic.compute_stats(graph)
-        self.assertEqual((stats["current"], stats["current_start"]), (4, 3))
-        self.assertEqual((stats["busiest"], stats["busiest_day"]), (5, 4))
-
-    def test_days_text(self):
-        self.assertEqual(logic.days_text(0), "0 days")
-        self.assertEqual(logic.days_text(1), "1 day")
-        self.assertEqual(logic.days_text(1234), "1,234 days")
-
-    def tiles(self, counts):
-        graph = make_graph(counts)
-        return logic.stat_tiles(graph, logic.compute_stats(graph))
-
-    def test_stat_tiles(self):
-        self.assertEqual(self.tiles([0, 1, 2, 0, 3, 3, 3,
-                                     0, 0, 5, 5, 0, 0, 0]),
-                         (("Contributions", "22", "in the last year"),
-                          ("Busiest day", "5", "on Nov 5"),
-                          ("Current streak", "0 days", ""),
-                          ("Longest streak", "3 days", "Oct 30 - Nov 1")))
-
-    def test_stat_tiles_for_one_day_streaks(self):
-        self.assertEqual(self.tiles([0, 0, 7]),
-                         (("Contributions", "7", "in the last year"),
-                          ("Busiest day", "7", "on Oct 28"),
-                          ("Current streak", "1 day", "since Oct 28"),
-                          ("Longest streak", "1 day", "on Oct 28")))
-
-    def test_stat_tiles_with_big_numbers(self):
-        self.assertEqual(self.tiles([1500, 2000]),
-                         (("Contributions", "3,500", "in the last year"),
-                          ("Busiest day", "2,000", "on Oct 27"),
-                          ("Current streak", "2 days", "since Oct 26"),
-                          ("Longest streak", "2 days", "Oct 26 - Oct 27")))
-
-    def test_stat_tiles_without_contributions_have_no_dates(self):
-        self.assertEqual(self.tiles([0] * 9),
-                         (("Contributions", "0", "in the last year"),
-                          ("Busiest day", "0", ""),
-                          ("Current streak", "0 days", ""),
-                          ("Longest streak", "0 days", "")))
+    def test_stat_lines(self):
+        lines = logic.stat_lines({"current": 1, "longest": 1234, "active": 3, "busiest": 56})
+        self.assertEqual(lines, (("1 day", "Current streak"),
+                                 ("1,234 days", "Longest streak"),
+                                 ("56", "Busiest day")))
 
     def test_summary_and_day_lines(self):
         graph = make_graph([0, 3, 0, 1234])
@@ -382,39 +326,6 @@ class LayoutTests(unittest.TestCase):
         graph = logic.parse_contribs(payloads.build(weeks=2, last_week_days=2, first_week_start=4), "x")
         groups = logic.layout_cells(graph, 0, 0, 6)
         self.assertEqual(sum(len(g) for g in groups), 3 + 2)
-
-    def test_month_labels_for_part_of_the_weeks(self):
-        self.assertEqual(self.graph.weeks, 53)
-        self.assertEqual(logic.month_labels(self.graph, first=0, stop=27),
-                         [(1, "Nov"), (6, "Dec"), (10, "Jan"), (14, "Feb"), (18, "Mar"), (23, "Apr")])
-        self.assertEqual(logic.month_labels(self.graph, first=27),
-                         [(27, "May"), (32, "Jun"), (36, "Jul"), (40, "Aug"), (45, "Sep"), (49, "Oct")])
-
-    def test_the_first_week_of_a_part_names_its_month_when_there_is_room(self):
-        self.assertEqual(logic.month_labels(self.graph, first=28, stop=40),
-                         [(28, "May"), (32, "Jun"), (36, "Jul")])
-        self.assertEqual(logic.month_labels(self.graph, first=24, stop=30), [(27, "May")])
-        self.assertEqual(logic.month_labels(self.graph, first=24, stop=25), [(24, "Apr")])
-
-    def test_cell_xy(self):
-        self.assertEqual(logic.cell_xy(0, 25, 52, 10), (25, 52))
-        self.assertEqual(logic.cell_xy(7 * 53 + 6, 1, 64, 6), (1 + 53 * 6, 64 + 36))
-        self.assertEqual(logic.cell_xy(7 * 26 + 6, 25, 52, 10, 27, 85), (285, 112))
-        self.assertEqual(logic.cell_xy(7 * 27, 25, 52, 10, 27, 85), (25, 137))
-        self.assertEqual(logic.cell_xy(7 * 53 + 3, 25, 52, 10, 27, 85), (285, 167))
-
-    def test_layout_cells_in_two_bands(self):
-        groups = logic.layout_cells(self.graph, 25, 52, 10, 27, 85)
-        seen = set()
-        for level, cells in enumerate(groups):
-            for x, y in cells:
-                band = 1 if y >= 52 + 85 else 0
-                week = (x - 25) // 10 + 27 * band
-                index = week * 7 + (y - 52 - 85 * band) // 10
-                self.assertEqual(self.graph.levels[index], str(level))
-                self.assertEqual(logic.cell_xy(index, 25, 52, 10, 27, 85), (x, y))
-                seen.add(index)
-        self.assertEqual(seen, set(range(self.graph.last + 1)))
 
 
 class CursorTests(unittest.TestCase):
