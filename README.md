@@ -18,7 +18,9 @@ The Contribution Graph app displays your GitHub contributions as the familiar ye
    ```
 
 2. **Copy the app to your badge**:
-   - Place the `badge/apps/contribution_graph/` directory on your badge.
+   - Put the badge in USB Disk Mode (open the **Mass Storage** app, or double-tap RESET).
+   - Copy the `badge/apps/contribution_graph/` directory to `/apps/` on the **BADGER** drive.
+   - Eject the drive. The badge restarts automatically.
 
 3. **Open the app**: Select **Contribution Graph** from the badge menu.
 
