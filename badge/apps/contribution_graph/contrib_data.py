@@ -251,18 +251,24 @@ def compute_stats(graph):
     The current streak counts back from the last day. If that day has no
     contributions yet it is skipped rather than ending the streak, because
     the day is not over.
+
+    current_start, longest_end and busiest_day are cell indexes, or None
+    when there is no such day. Ties go to the most recent day.
     """
     counts = graph.counts
     longest = run = active = busiest = 0
+    longest_end = busiest_day = None
     for i in range(graph.first, graph.last + 1):
         n = counts[i]
         if n > 0:
             run += 1
             active += 1
-            if run > longest:
+            if run >= longest:
                 longest = run
-            if n > busiest:
+                longest_end = i
+            if n >= busiest:
                 busiest = n
+                busiest_day = i
         else:
             run = 0
     i = graph.last
@@ -272,7 +278,9 @@ def compute_stats(graph):
     while i >= graph.first and counts[i] > 0:
         current += 1
         i -= 1
-    return {"current": current, "longest": longest, "active": active, "busiest": busiest}
+    return {"current": current, "longest": longest, "active": active, "busiest": busiest,
+            "current_start": i + 1 if current else None, "longest_end": longest_end,
+            "busiest_day": busiest_day}
 
 
 def days_text(count):
@@ -291,25 +299,43 @@ def day_lines(graph, index):
     return long_date(graph.day(index)), ("No contributions" if n == 0 else count_text(n))
 
 
-def stat_lines(stats):
-    """(value, label) text for the three numbers under the graph."""
+def stat_tiles(graph, stats):
+    """(label, value, note) text for the four tiles on the stats page."""
+
+    def on(index):
+        return short_date(graph.day(index))
+
+    current = stats["current"]
+    longest = stats["longest"]
+    busiest = stats["busiest"]
+    end = stats["longest_end"]
+    if longest > 1:
+        streak = on(end - longest + 1) + " - " + on(end)
+    elif longest:
+        streak = "on " + on(end)
+    else:
+        streak = ""
     return (
-        (days_text(stats["current"]), "Current streak"),
-        (days_text(stats["longest"]), "Longest streak"),
-        (with_commas(stats["busiest"]), "Busiest day"),
+        ("Contributions", with_commas(graph.total), "in the last year"),
+        ("Busiest day", with_commas(busiest), "on " + on(stats["busiest_day"]) if busiest else ""),
+        ("Current streak", days_text(current), "since " + on(stats["current_start"]) if current else ""),
+        ("Longest streak", days_text(longest), streak),
     )
 
 
-def month_labels(graph, min_gap=4):
-    """(week column, 'Oct') pairs, one per month, for the row above the graph.
+def month_labels(graph, min_gap=4, first=0, stop=None):
+    """(week column, 'Oct') pairs, one per month, for the row above weeks first..stop-1.
 
-    A month is labelled at the first week that starts in it. A label that
-    would sit closer than min_gap columns to the next is dropped, which
-    removes the partial month at the left edge.
+    A month is labelled at the first of those weeks that starts in it, so
+    the first week always names its month. A label that would sit closer
+    than min_gap columns to the next is dropped, which removes a partial
+    month at the left edge.
     """
+    if stop is None:
+        stop = graph.weeks
     labels = []
     previous = None
-    for week in range(graph.weeks):
+    for week in range(first, stop):
         month = civil_from_days(graph.start + week * 7)[1]
         if month != previous:
             previous = month
@@ -319,14 +345,24 @@ def month_labels(graph, min_gap=4):
     return labels
 
 
-def layout_cells(graph, x0, y0, pitch):
+def cell_xy(index, x0, y0, pitch, split=MAX_WEEKS, band_step=0):
+    """Top-left pixel of a cell. Weeks from `split` on wrap to a second band band_step pixels lower."""
+    week = index // 7
+    y = y0 + (index % 7) * pitch
+    if week >= split:
+        week -= split
+        y += band_step
+    return x0 + week * pitch, y
+
+
+def layout_cells(graph, x0, y0, pitch, split=MAX_WEEKS, band_step=0):
     """Pixel position of every cell, in five lists (one per level) of (x, y)."""
     groups = [[], [], [], [], []]
     levels = graph.levels
     for i in range(len(levels)):
         ch = levels[i]
         if ch != NO_DATA:
-            groups[int(ch)].append((x0 + (i // 7) * pitch, y0 + (i % 7) * pitch))
+            groups[int(ch)].append(cell_xy(i, x0, y0, pitch, split, band_step))
     return groups
 
 
