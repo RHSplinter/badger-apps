@@ -4,15 +4,16 @@ Contribution Graph shows any GitHub user's yearly contribution heatmap, starting
 
 It draws the last year of contributions as the familiar grid of green squares,
 one column per week, and shows the current streak, longest streak and busiest
-day underneath. The default user is **RHSplinter**; you can switch to anyone
-else with an on-screen keyboard, and the badge remembers your choice.
+day underneath. The app always opens on **RHSplinter**; you can look up anyone
+else with an on-screen keyboard, and that choice lasts until you leave the app.
 
 ## Usage
 
 Open **Contribution Graph** from the badge menu. The graph appears as soon as
 it has been downloaded, and refreshes by itself every 30 minutes while the app
-is open. The last graph is saved on the badge, so it shows immediately next
-time, even when Wi-Fi is not available.
+is open. RHSplinter's last graph is saved on the badge, so it shows immediately
+next time, even when Wi-Fi is not available. Graphs for other users are not
+saved.
 
 ### Controls
 
@@ -37,9 +38,9 @@ date and number of contributions for the highlighted day.
    comes back with "User not found" so you can fix the name. The previous user
    stays selected; press **MENU** to leave the keyboard.
 
-The chosen user is saved in `/state/contribution_graph.json` on the badge and
-is used again the next time the app starts. Names may contain letters, numbers
-and hyphens, up to 39 characters.
+The chosen user is not saved. Their graph stays up until you leave the app, and
+the next time you open it, it starts on RHSplinter again. Names may contain
+letters, numbers and hyphens, up to 39 characters.
 
 ## Requirements
 
@@ -59,8 +60,10 @@ and hyphens, up to 39 characters.
   badge dependencies, so it also runs on a desktop for testing.
 - `icon.png`: 48x48 menu icon.
 
-Saved on the badge: `/state/contribution_graph.json` (the user) and
-`/state/contribution_graph_cache.json` (the last graph, about 1.5 KB).
+Saved on the badge: `/state/contribution_graph_cache.json` (RHSplinter's last
+graph, about 1.5 KB). The app does not record which user you looked up last. An
+old `/state/contribution_graph.json` from earlier versions, which stored that
+choice, is ignored and deleted when the app starts.
 
 ## Status
 
@@ -71,8 +74,11 @@ Checked so far:
 
 - The static validator, for both the badge and the simulator, with no warnings.
 - Desktop tests that drive the app against a fake badge and run every line of
-  both files.
+  both files. They cover starting on RHSplinter every time, never saving
+  another user, and ignoring the file an earlier version left behind.
 - The same code on MicroPython 1.29.0, giving the same results as desktop Python.
-- The web simulator (https://badger.github.io/simulator): live data loads, both
-  screens draw, the cursor moves, the user can be changed, an unknown user is
-  rejected, and the app recovers after being offline.
+- The web simulator (https://badger.github.io/simulator): live data loads, the
+  cursor moves, SELECT refreshes, the user can be changed, an unknown user is
+  rejected, and the app recovers after being offline. Running the app again
+  there starts on RHSplinter. The simulator does not keep saved files between
+  runs, so the saved graph is only checked by the desktop tests and MicroPython.

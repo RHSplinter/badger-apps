@@ -11,7 +11,6 @@ sys.path.insert(0, APP_DIR)
 
 import fetch
 import missing_details
-from badgeware import State
 
 import contrib_data as logic
 
@@ -33,10 +32,10 @@ except Exception:
     FONT = font.nope
 screen.font = FONT
 
-STATE_NAME = "contribution_graph"
 STATE_DIR = "/state"
 CACHE_FILE = STATE_DIR + "/contribution_graph_cache.json"
 DOWNLOAD_FILE = STATE_DIR + "/contribution_graph_download.json"
+OLD_USER_FILE = STATE_DIR + "/contribution_graph.json"
 HEADERS = {"User-Agent": "GitHub Universe Badge 2026"}
 REFRESH_MS = 30 * 60 * 1000
 MAX_DOWNLOAD_BYTES = 64 * 1024
@@ -120,13 +119,6 @@ def write_cache(graph):
     try:
         with open(CACHE_FILE, "w") as f:
             json.dump(graph.to_dict(), f)
-    except OSError:
-        pass
-
-
-def save_handle(handle):
-    try:
-        State.save(STATE_NAME, {"handle": handle})
     except OSError:
         pass
 
@@ -224,13 +216,9 @@ class GraphView:
 
 class App:
     def __init__(self):
-        saved = {"handle": logic.DEFAULT_HANDLE}
-        try:
-            State.load(STATE_NAME, saved)
-        except Exception:
-            pass
-        handle = saved["handle"]
-        self.handle = handle if logic.valid_handle(handle) else logic.DEFAULT_HANDLE
+        # The app always opens on the default user. Earlier versions saved the last user here.
+        remove(OLD_USER_FILE)
+        self.handle = logic.DEFAULT_HANDLE
         self.graph = read_cache(self.handle)
         self.view = None
         self.cursor = 0
@@ -336,7 +324,6 @@ class App:
     def switch_user(self, handle):
         if logic.same_handle(handle, self.handle):
             self.handle = handle
-            save_handle(handle)
             if self.graph is not None:
                 self.view = GraphView(self.graph, handle)
                 self.view.select(self.cursor)
@@ -345,7 +332,6 @@ class App:
         if self.previous is None:
             self.previous = (self.handle, self.graph)
         self.handle = handle
-        save_handle(handle)
         self.graph = None
         self.view = None
         self.problem = None
@@ -361,7 +347,6 @@ class App:
             return
         self.handle, self.graph = self.previous
         self.previous = None
-        save_handle(self.handle)
         self.problem = None
         self.view = None
         if self.graph is None:
@@ -388,7 +373,8 @@ class App:
         self.problem = None
         self.failures = 0
         self.next_fetch_at = badge.ticks + REFRESH_MS
-        write_cache(fresh)
+        if logic.same_handle(self.handle, logic.DEFAULT_HANDLE):
+            write_cache(fresh)
 
     # -- network -------------------------------------------------------
 

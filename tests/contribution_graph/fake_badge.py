@@ -19,7 +19,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 APP_SOURCE = HERE.parents[1] / "badge" / "apps" / "contribution_graph"
 APP_DIR = "/system/apps/contribution_graph"
-STATE_FILE = "/state/contribution_graph.json"
+OLD_USER_FILE = "/state/contribution_graph.json"    # where earlier versions saved the last user
 CACHE_FILE = "/state/contribution_graph_cache.json"
 DOWNLOAD_FILE = "/state/contribution_graph_download.json"
 
@@ -164,29 +164,6 @@ class FakeMissingDetails:
             background()
 
 
-class FakeState:
-    def __init__(self, runtime):
-        self.runtime = runtime
-
-    def path(self, name):
-        return self.runtime.host("/state/{}.json".format(name))
-
-    def load(self, name, target):
-        try:
-            with open(self.path(name)) as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return False
-        if isinstance(target, dict) and isinstance(data, dict):
-            target.update(data)
-        return True
-
-    def save(self, name, data):
-        self.runtime.state_dir.mkdir(parents=True, exist_ok=True)
-        with open(self.path(name), "w") as f:
-            json.dump(data, f)
-
-
 class FakeOS:
     """The few os calls the app uses, with the badge's paths mapped to a temp folder."""
 
@@ -271,7 +248,7 @@ class Runtime:
     FRAME_MS = 33
     source_override = None    # lets the mutation check run a modified copy of the app
 
-    def __init__(self, root, *, missing=(), state=None, cache=None, replies=(), measure=None):
+    def __init__(self, root, *, missing=(), old_user=None, cache=None, replies=(), measure=None):
         self.root = Path(root)
         self.state_dir = self.root / "state"
         self.replies = list(replies)
@@ -284,12 +261,11 @@ class Runtime:
         self.missing_details = FakeMissingDetails(missing)
         self.fetch = FakeFetch(self)
         self.os = FakeOS(self)
-        self.state = FakeState(self)
         self.registered = None
         self.namespace = None
         self.frames = 0
-        if state is not None:
-            self.write_file(STATE_FILE, state)
+        if old_user is not None:
+            self.write_file(OLD_USER_FILE, old_user)
         if cache is not None:
             self.write_file(CACHE_FILE, cache)
 
@@ -322,7 +298,6 @@ class Runtime:
             "sys": types.SimpleNamespace(path=[]),
             "fetch": self.fetch,
             "missing_details": self.missing_details,
-            "badgeware": types.SimpleNamespace(State=self.state),
             "wifi": self.wifi,
         }
         real_import = builtins.__import__

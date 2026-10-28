@@ -14,10 +14,11 @@ import tempfile
 import types
 import unittest
 
-from fake_badge import CACHE_FILE, DOWNLOAD_FILE, STATE_FILE, Reply, Runtime
+from fake_badge import CACHE_FILE, DOWNLOAD_FILE, OLD_USER_FILE, Reply, Runtime
 import payloads
 import contrib_data as logic
 
+CACHE_NAME = os.path.basename(CACHE_FILE)
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")   # datetime.weekday() order
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 SECOND = 1000
@@ -110,6 +111,10 @@ class AppCase(unittest.TestCase):
         rt.frames_for(6)
         return rt
 
+    def saved_files(self, rt):
+        """Names of the files the app has left in the badge's /state folder."""
+        return sorted(os.listdir(rt.state_dir)) if rt.state_dir.exists() else []
+
     def retry_footer(self, rt):
         """(problem, seconds) from a red "<problem> - retrying in Ns" footer."""
         text, pen = footer(rt)
@@ -169,9 +174,9 @@ class LaunchTests(AppCase):
         self.assertEqual(len(cache["l"]), 53 * 7)
         self.assertEqual(sum(cache["c"]), self.total)
 
-    def test_the_default_user_is_not_saved_until_it_is_changed(self):
+    def test_only_the_default_graph_is_saved(self):
         rt = self.launched(Reply(self.payload))
-        self.assertFalse(rt.exists(STATE_FILE))
+        self.assertEqual(self.saved_files(rt), [CACHE_NAME])
 
     def test_a_saved_graph_is_shown_on_the_first_frame_while_it_updates(self):
         self.launched(Reply(self.payload))
@@ -189,6 +194,8 @@ class LaunchTests(AppCase):
         rt.frame()
         self.assertIsNone(rt.app.graph)
         self.assertIn("@RHSplinter", rt.texts())
+        rt.frames_for(5)
+        self.assertEqual(rt.read_json(CACHE_FILE)["h"], "RHSplinter")
 
     def test_the_cache_is_matched_to_the_user_without_regard_to_case(self):
         cache = logic.parse_contribs(self.payload, "rhsplinter").to_dict()
@@ -218,21 +225,27 @@ class LaunchTests(AppCase):
                     self.assertIn(summary_text(self.total), rt.texts())
                     self.assertEqual(rt.read_json(CACHE_FILE)["h"], "RHSplinter")
 
-    def test_a_saved_handle_is_used(self):
-        rt = self.launch(Reply(self.payload), state={"handle": "octocat"})
-        rt.frames_for(5)
-        self.assertEqual(rt.requests[0].url, "https://github.com/octocat.contribs")
-        self.assertIn("@octocat", rt.texts())
-
-    def test_unusable_saved_handles_fall_back_to_the_default(self):
-        cases = ({"handle": "bad handle!"}, {"handle": ""}, {"handle": 7}, {"handle": None},
-                 {"handle": "x" * 40}, {"handle": "a/b"}, {"other": 1}, [], "not json at all")
+    def test_a_user_saved_by_an_earlier_version_is_ignored_and_removed(self):
+        cases = ({"handle": "octocat"}, {"handle": "bad handle!"}, {"handle": 7}, {"other": 1}, [],
+                 "not json at all")
         for saved in cases:
             with self.subTest(saved=saved):
                 with tempfile.TemporaryDirectory() as root:
-                    rt = self.launch(Reply(self.payload), root=root, state=saved)
-                    rt.frames_for(2)
+                    rt = self.launch(Reply(self.payload), root=root, old_user=saved)
+                    self.assertFalse(rt.exists(OLD_USER_FILE))
+                    rt.frames_for(6)
+                    self.assertEqual(rt.app.handle, "RHSplinter")
                     self.assertEqual(rt.requests[0].url, "https://github.com/RHSplinter.contribs")
+                    self.assertIn("@RHSplinter", rt.texts())
+                    self.assertEqual(self.saved_files(rt), [CACHE_NAME])
+
+    def test_the_app_still_starts_if_the_old_file_cannot_be_removed(self):
+        rt = Runtime(self.root, replies=[Reply(self.payload)])
+        os.makedirs(rt.host(OLD_USER_FILE))
+        rt.start()
+        rt.frames_for(6)
+        self.assertEqual(rt.app.handle, "RHSplinter")
+        self.assertIn(summary_text(self.total), rt.texts())
 
     def test_buttons_do_nothing_harmful_while_loading(self):
         rt = self.launch(Reply(self.payload, pumps=100))
@@ -431,7 +444,7 @@ class ChangeUserTests(AppCase):
         self.assertIsNone(rt.app.editor)
         self.assertEqual(len(rt.requests), 1)
         self.assertEqual(rt.app.handle, "RHSplinter")
-        self.assertFalse(rt.exists(STATE_FILE))
+        self.assertEqual(self.saved_files(rt), [CACHE_NAME])
         self.assertIn(summary_text(self.total), rt.texts())
 
     def test_back_deletes_letters_and_closes_the_keyboard_when_the_box_is_empty(self):
@@ -469,14 +482,15 @@ class ChangeUserTests(AppCase):
         rt.press("LEFT")
         self.assertEqual(editor.cursor, 39)
 
-    def test_entering_a_new_user_switches_and_remembers_it(self):
+    def test_entering_a_new_user_switches_to_it_without_saving_it(self):
         other = other_payload()
         self.assertNotEqual(self.total, other["total_contributions"])
         rt = self.launched(Reply(self.payload), Reply(other, pumps=20))
+        default_cache = rt.read_json(CACHE_FILE)
         rt.enter_user("Octo-Cat9")
         self.assertIsNone(rt.app.editor)
         self.assertEqual(rt.app.handle, "Octo-Cat9")
-        self.assertEqual(rt.read_json(STATE_FILE), {"handle": "Octo-Cat9"})
+        self.assertEqual(self.saved_files(rt), [CACHE_NAME])
         rt.frame()
         self.assertIn("@Octo-Cat9", rt.texts())
         self.assertNotIn(summary_text(self.total), rt.texts())
@@ -484,8 +498,9 @@ class ChangeUserTests(AppCase):
         rt.frames_for(30)
         self.assertIn(summary_text(other["total_contributions"]), rt.texts())
         self.assertIn("@Octo-Cat9", rt.texts())
-        self.assertEqual(rt.read_json(CACHE_FILE)["h"], "Octo-Cat9")
         self.assertEqual(rt.app.cursor, 366)
+        self.assertEqual(rt.read_json(CACHE_FILE), default_cache)
+        self.assertEqual(self.saved_files(rt), [CACHE_NAME])
 
     def test_holding_select_repeats_only_on_the_delete_key(self):
         rt = self.launched(Reply(self.payload))
@@ -507,16 +522,7 @@ class ChangeUserTests(AppCase):
         self.assertIn("Use letters, numbers and hyphens", rt.texts())
         self.assertEqual(rt.app.handle, "RHSplinter")
         self.assertEqual(len(rt.requests), 1)
-        self.assertFalse(rt.exists(STATE_FILE))
-
-    def test_a_new_user_is_shown_even_when_it_cannot_be_remembered(self):
-        other = other_payload()
-        rt = self.launched(Reply(self.payload), Reply(other))
-        os.makedirs(rt.host(STATE_FILE))
-        rt.enter_user("octocat")
-        rt.frames_for(6)
-        self.assertEqual(rt.app.handle, "octocat")
-        self.assertIn(summary_text(other["total_contributions"]), rt.texts())
+        self.assertEqual(self.saved_files(rt), [CACHE_NAME])
 
     def test_an_empty_name_is_refused(self):
         rt = self.launched(Reply(self.payload))
@@ -529,7 +535,7 @@ class ChangeUserTests(AppCase):
         self.assertEqual(rt.app.editor.error, "Type a username first")
         self.assertIn("Type a username first", rt.texts())
         self.assertEqual(len(rt.requests), 1)
-        self.assertFalse(rt.exists(STATE_FILE))
+        self.assertEqual(self.saved_files(rt), [CACHE_NAME])
 
     def test_typing_clears_the_error(self):
         rt = self.launched(Reply(self.payload))
@@ -560,7 +566,6 @@ class ChangeUserTests(AppCase):
         self.assertEqual(rt.app.handle, "rhsplinter")
         self.assertEqual(len(rt.requests), 2)
         self.assertEqual(rt.requests[1].url, "https://github.com/rhsplinter.contribs")
-        self.assertEqual(rt.read_json(STATE_FILE), {"handle": "rhsplinter"})
         rt.frame()
         self.assertIn("@rhsplinter", rt.texts())
         self.assertIn(summary_text(self.total), rt.texts())
@@ -601,7 +606,6 @@ class UnknownUserTests(AppCase):
                     rt.frames_for(6)
                     app = rt.app
                     self.assertEqual(app.handle, "RHSplinter")
-                    self.assertEqual(rt.read_json(STATE_FILE), {"handle": "RHSplinter"})
                     self.assertFalse(rt.exists(DOWNLOAD_FILE))
                     self.assertEqual(app.editor.text, "nosuchuser")
                     self.assertEqual(app.editor.error, "User not found")
@@ -624,19 +628,17 @@ class UnknownUserTests(AppCase):
         self.assertEqual(rt.app.handle, "RHSplinter")
         self.assertEqual(rt.app.editor.text, "nosuchuser")
         self.assertEqual(rt.app.editor.error, "nosuchuser was not found")
-        self.assertEqual(rt.read_json(STATE_FILE), {"handle": "RHSplinter"})
         rt.press("MENU")
         self.assertIn(summary_text(self.total), rt.texts())
 
-    def test_an_unknown_first_user_is_reported_without_retrying(self):
+    def test_an_unknown_default_user_is_reported_without_retrying(self):
         for style in ("firmware", "browser"):
             with self.subTest(style):
                 with tempfile.TemporaryDirectory() as root:
                     other = other_payload()
-                    rt = self.launch(Reply(status=404, style=style), Reply(other), root=root,
-                                     state={"handle": "ghost"})
+                    rt = self.launch(Reply(status=404, style=style), Reply(other), root=root)
                     rt.frames_for(6)
-                    self.assertEqual(rt.app.handle, "ghost")
+                    self.assertEqual(rt.app.handle, "RHSplinter")
                     self.assertIsNone(rt.app.graph)
                     self.assertIn("User not found", rt.texts())
                     self.assertEqual(footer(rt), ("User not found - MENU change user", rt.namespace["RED"]))
@@ -646,11 +648,11 @@ class UnknownUserTests(AppCase):
                     rt.frames_for(6)
                     self.assertEqual(rt.app.handle, "octocat")
                     self.assertIn(summary_text(other["total_contributions"]), rt.texts())
-                    self.assertEqual(rt.read_json(STATE_FILE), {"handle": "octocat"})
                     self.assertEqual(footer(rt)[0], HINT)
+                    self.assertEqual(self.saved_files(rt), [])
 
     def test_two_unknown_users_in_a_row_do_not_loop(self):
-        rt = self.launch(Reply(status=404), Reply(status=404), Reply(status=404), state={"handle": "ghost"})
+        rt = self.launch(Reply(status=404), Reply(status=404), Reply(status=404))
         rt.frames_for(6)
         rt.enter_user("nosuchuser")
         rt.frames_for(6)
@@ -658,7 +660,7 @@ class UnknownUserTests(AppCase):
         rt.press("MENU")
         rt.wait(10 * MINUTE, step=SECOND)
         self.assertEqual(len(rt.requests), 3)
-        self.assertEqual(rt.app.handle, "ghost")
+        self.assertEqual(rt.app.handle, "RHSplinter")
         self.assertEqual(footer(rt)[0], "User not found - MENU change user")
 
     def test_an_unknown_user_after_a_failed_lookup_still_returns_to_the_first_graph(self):
@@ -669,7 +671,6 @@ class UnknownUserTests(AppCase):
         rt.enter_user("ghost")
         rt.frames_for(6)
         self.assertEqual(rt.app.handle, "RHSplinter")
-        self.assertEqual(rt.read_json(STATE_FILE), {"handle": "RHSplinter"})
         self.assertEqual(rt.app.editor.text, "ghost")
         self.assertEqual(rt.app.editor.error, "User not found")
         rt.press("MENU")
@@ -685,7 +686,6 @@ class UnknownUserTests(AppCase):
         rt.enter_user("ghost")
         rt.frames_for(6)
         self.assertEqual(rt.app.handle, "octocat")
-        self.assertEqual(rt.read_json(STATE_FILE), {"handle": "octocat"})
         rt.press("MENU")
         self.assertIn("@octocat", rt.texts())
         self.assertIn(summary_text(other["total_contributions"]), rt.texts())
@@ -1008,7 +1008,7 @@ class RefreshTests(AppCase):
         self.assertEqual(rt.requests[2].url, "https://github.com/octocat.contribs")
         self.assertIn("@octocat", rt.texts())
         self.assertIn(summary_text(other["total_contributions"]), rt.texts())
-        self.assertEqual(rt.read_json(CACHE_FILE)["h"], "octocat")
+        self.assertEqual(rt.read_json(CACHE_FILE)["h"], "RHSplinter")
         self.assertFalse(rt.exists(DOWNLOAD_FILE))
 
     def test_a_late_reply_for_the_previous_user_is_cleaned_up_even_if_nothing_replaces_it(self):
@@ -1072,32 +1072,50 @@ class MissingWifiTests(AppCase):
         self.assertEqual(rt.app.editor.error, "Set up Wi-Fi to look up users")
         self.assertIn("Set up Wi-Fi to look up users", rt.texts())
         self.assertEqual(rt.app.handle, "RHSplinter")
-        self.assertFalse(rt.exists(STATE_FILE))
+        self.assertEqual(self.saved_files(rt), [CACHE_NAME])
         self.assertEqual(rt.requests, [])
 
 
 class ReopenTests(AppCase):
-    def test_the_chosen_user_and_graph_are_still_there_after_reopening(self):
+    def test_a_reopened_app_goes_back_to_the_default_user(self):
         other = other_payload()
         rt = self.launched(Reply(self.payload), Reply(other))
         rt.enter_user("octocat")
         rt.frames_for(6)
-        reopened = self.launch(Reply(other, pumps=10))
-        reopened.frame()
-        self.assertEqual(reopened.app.handle, "octocat")
-        self.assertIn("@octocat", reopened.texts())
-        self.assertIn(summary_text(other["total_contributions"]), reopened.texts())
-        self.assertEqual(reopened.requests[0].url, "https://github.com/octocat.contribs")
-
-    def test_a_rejected_user_is_not_remembered(self):
-        rt = self.launched(Reply(self.payload), Reply(status=404))
-        rt.enter_user("nosuchuser")
-        rt.frames_for(6)
+        self.assertEqual(rt.app.handle, "octocat")
+        self.assertIn("@octocat", rt.texts())
         reopened = self.launch(Reply(self.payload, pumps=10))
         reopened.frame()
         self.assertEqual(reopened.app.handle, "RHSplinter")
-        self.assertEqual(reopened.requests[0].url, "https://github.com/RHSplinter.contribs")
+        self.assertIn("@RHSplinter", reopened.texts())
+        self.assertNotIn("@octocat", reopened.texts())
         self.assertIn(summary_text(self.total), reopened.texts())
+        self.assertEqual(reopened.requests[0].url, "https://github.com/RHSplinter.contribs")
+        reopened.frames_for(12)
+        self.assertEqual(len(reopened.requests), 1)
+        self.assertEqual(reopened.app.handle, "RHSplinter")
+
+    def test_the_default_graph_is_still_there_offline_after_looking_up_someone_else(self):
+        rt = self.launched(Reply(self.payload), Reply(other_payload()))
+        rt.enter_user("octocat")
+        rt.frames_for(6)
+        reopened = self.launch(missing=["WIFI_SSID"])
+        reopened.frames_for(3)
+        self.assertEqual(reopened.app.handle, "RHSplinter")
+        self.assertIn(summary_text(self.total), reopened.texts())
+        self.assertEqual(footer(reopened), ("Wi-Fi isn't set up - showing saved data", reopened.namespace["MUTED"]))
+
+    def test_someone_elses_graph_is_never_saved_in_place_of_the_default(self):
+        rt = self.launched(Reply(error=OSError("offline")), Reply(other_payload()))
+        rt.enter_user("octocat")
+        rt.frames_for(6)
+        self.assertEqual(rt.app.handle, "octocat")
+        self.assertIsNotNone(rt.app.graph)
+        self.assertEqual(self.saved_files(rt), [])
+        reopened = self.launch(Reply(self.payload, pumps=10))
+        reopened.frame()
+        self.assertEqual(reopened.app.handle, "RHSplinter")
+        self.assertIsNone(reopened.app.graph)
 
     def test_a_half_finished_download_from_an_earlier_run_is_harmless(self):
         for name, reply in (("the new download fails", Reply(error=OSError("boom"))),
@@ -1169,10 +1187,10 @@ class CentringTests(AppCase):
             self.assertEqual(pen, rt.namespace["MUTED"])
 
     def test_the_wifi_setup_backdrop_is_centred(self):
-        rt = self.launch(missing=["WIFI_SSID"], state={"handle": "octocat"})
+        rt = self.launch(missing=["WIFI_SSID"])
         rt.frames_for(2)
-        self.assertCentred(rt, "@octocat")
-        self.assertEqual(text_op(rt, "@octocat")[2], 90)
+        self.assertCentred(rt, "@RHSplinter")
+        self.assertEqual(text_op(rt, "@RHSplinter")[2], 90)
 
 
 class GraphLayoutTests(AppCase):
@@ -1491,9 +1509,13 @@ class ScreenFitTests(AppCase):
                         self.assertFits(rt, name + " " + button)
 
     def test_a_long_user_name_on_the_graph(self):
-        rt = self.launched(Reply(self.payload), state={"handle": "a" * 39}, measure=pessimistic)
+        name = "a" * 39
+        rt = self.launched(Reply(self.payload), Reply(self.payload), measure=pessimistic)
+        rt.enter_user(name)
+        rt.frames_for(6)
+        self.assertEqual(rt.app.handle, name)
         self.assertIsNotNone(rt.app.graph)
-        self.assertIn("@" + "a" * 39, rt.texts())
+        self.assertIn("@" + name, rt.texts())
         self.assertFits(rt, "graph")
 
     def test_loading_and_problem_screens(self):
@@ -1503,16 +1525,31 @@ class ScreenFitTests(AppCase):
             ("long detail", Reply(error=OSError("x" * 200))),
             ("http", Reply(status=503)),
             ("bad data", Reply(body="nope")),
-            ("not found", Reply(status=404)),
         )
         for label, reply in errors:
             with self.subTest(label):
                 with tempfile.TemporaryDirectory() as root:
-                    rt = self.launch(reply, root=root, state={"handle": name}, measure=pessimistic)
+                    rt = self.launch(Reply(error=OSError("offline")), reply, root=root, measure=pessimistic)
                     rt.frames_for(4)
+                    rt.enter_user(name)
+                    rt.frames_for(4)
+                    self.assertEqual(rt.app.handle, name)
+                    self.assertIsNone(rt.app.graph)
+                    self.assertIn("@" + name, rt.texts())
                     self.assertFits(rt, label)
                     rt.wait(100 * SECOND, step=SECOND)
                     self.assertFits(rt, label + " later")
+
+    def test_a_long_user_name_that_stops_existing(self):
+        name = "a" * 39
+        rt = self.launched(Reply(self.payload), Reply(self.payload), Reply(status=404), measure=pessimistic)
+        rt.enter_user(name)
+        rt.frames_for(6)
+        rt.wait(JUST_AFTER_REFRESH, step=SECOND)
+        rt.frames_for(3)
+        self.assertEqual(rt.app.handle, name)
+        self.assertEqual(footer(rt)[0], "User not found - MENU change user")
+        self.assertFits(rt, "long name not found")
 
     def test_a_long_problem_headline_on_a_graph(self):
         rt = self.launched(Reply(self.payload), Reply(body="nope"), measure=pessimistic)
@@ -1549,7 +1586,7 @@ class ScreenFitTests(AppCase):
         self.assertFits(rt, "long rejected name")
 
     def test_the_wifi_setup_screen(self):
-        rt = self.launch(missing=["WIFI_SSID"], state={"handle": "a" * 39}, measure=pessimistic)
+        rt = self.launch(missing=["WIFI_SSID"], measure=pessimistic)
         rt.frames_for(2)
         self.assertFits(rt, "wifi setup backdrop")
 
@@ -1592,10 +1629,12 @@ class RandomUseTests(AppCase):
         if app.editor is not None:
             self.assertLessEqual(len(app.editor.text), logic.MAX_HANDLE_LENGTH, where)
         self.assertLessEqual(len([r for r in rt.requests if not r.done]), 1, where)
-        if rt.exists(STATE_FILE):
-            self.assertTrue(logic.valid_handle(rt.read_json(STATE_FILE)["handle"]), where)
+        self.assertFalse(rt.exists(OLD_USER_FILE), where)
+        saved = self.saved_files(rt)
+        self.assertTrue(set(saved) <= {CACHE_NAME, os.path.basename(DOWNLOAD_FILE)}, (where, saved))
         if rt.exists(CACHE_FILE):
-            logic.graph_from_dict(rt.read_json(CACHE_FILE))
+            cached = logic.graph_from_dict(rt.read_json(CACHE_FILE))
+            self.assertTrue(logic.same_handle(cached.handle, logic.DEFAULT_HANDLE), where)
         if app.request is None:
             self.assertFalse(rt.exists(DOWNLOAD_FILE), where)
 
