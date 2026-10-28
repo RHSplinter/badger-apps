@@ -14,11 +14,35 @@ import tempfile
 import types
 import unittest
 
-from fake_badge import CACHE_FILE, DOWNLOAD_FILE, OLD_USER_FILE, Reply, Runtime
+from fake_badge import CACHE_FILE, DOWNLOAD_FILE, NO_KEY, NO_MODULE, OLD_USER_FILE, Reply, Runtime
 import payloads
 import contrib_data as logic
 
 CACHE_NAME = os.path.basename(CACHE_FILE)
+SETUP_EXAMPLE = 'GITHUB_USERNAME = "your-handle"'
+# Settings that leave GITHUB_USERNAME empty: (what the test calls it, what secrets.py provides).
+BLANK_SETTINGS = (
+    ("an empty string", ""),
+    ("spaces", "   "),
+    ("tabs and line breaks", " \t\r\n\x0b\x0c"),
+    ("None", None),
+    ("zero", 0),
+    ("no GITHUB_USERNAME line", NO_KEY),
+    ("no secrets module", NO_MODULE),
+)
+# Settings that are not a username: (name, what secrets.py provides, what the badge shows of it).
+REFUSED_SETTINGS = (
+    ("an @ in front", "@octocat", "@octocat"),
+    ("a space inside", "octo cat", "octo cat"),
+    ("a whole address", "https://github.com/octocat", "https://github.com/octocat"),
+    ("an underscore", "octo_cat", "octo_cat"),
+    ("a full stop", "octocat.", "octocat."),
+    ("an accent", "caf\u00e9", "caf?"),
+    ("another script", "\u65e5\u672c\u8a9e", "???"),
+    ("a control character", "octo\x07cat", "octo?cat"),
+    ("forty characters", "a" * 40, "a" * 27 + "..."),
+    ("spaces around it", "  @octocat \n", "@octocat"),
+)
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")   # datetime.weekday() order
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 SECOND = 1000
@@ -151,7 +175,7 @@ class LaunchTests(AppCase):
         self.assertIsNotNone(rt.app.graph)
         self.assertIn(summary_text(self.total), rt.texts())
 
-    def test_the_default_user_is_fetched_on_first_launch(self):
+    def test_the_configured_user_is_fetched_on_first_launch(self):
         rt = self.launch(Reply(self.payload))
         rt.frame()
         self.assertIsNone(rt.app.graph)
@@ -174,7 +198,7 @@ class LaunchTests(AppCase):
         self.assertEqual(len(cache["l"]), 53 * 7)
         self.assertEqual(sum(cache["c"]), self.total)
 
-    def test_only_the_default_graph_is_saved(self):
+    def test_only_the_configured_graph_is_saved(self):
         rt = self.launched(Reply(self.payload))
         self.assertEqual(self.saved_files(rt), [CACHE_NAME])
 
@@ -631,7 +655,7 @@ class UnknownUserTests(AppCase):
         rt.press("MENU")
         self.assertIn(summary_text(self.total), rt.texts())
 
-    def test_an_unknown_default_user_is_reported_without_retrying(self):
+    def test_an_unknown_configured_user_is_reported_without_retrying(self):
         for style in ("firmware", "browser"):
             with self.subTest(style):
                 with tempfile.TemporaryDirectory() as root:
@@ -641,6 +665,7 @@ class UnknownUserTests(AppCase):
                     self.assertEqual(rt.app.handle, "RHSplinter")
                     self.assertIsNone(rt.app.graph)
                     self.assertIn("User not found", rt.texts())
+                    self.assertIn("Check GITHUB_USERNAME in secrets.py", rt.texts())
                     self.assertEqual(footer(rt), ("User not found - MENU change user", rt.namespace["RED"]))
                     rt.wait(10 * MINUTE, step=SECOND)
                     self.assertEqual(len(rt.requests), 1)
@@ -650,6 +675,29 @@ class UnknownUserTests(AppCase):
                     self.assertIn(summary_text(other["total_contributions"]), rt.texts())
                     self.assertEqual(footer(rt)[0], HINT)
                     self.assertEqual(self.saved_files(rt), [])
+
+    def test_the_secrets_hint_is_kept_for_the_user_in_secrets(self):
+        rt = self.launched(Reply(self.payload), Reply(status=404))
+        rt.wait(JUST_AFTER_REFRESH, step=SECOND)
+        rt.frames_for(3)
+        self.assertEqual(rt.app.problem, ("User not found", "Check GITHUB_USERNAME in secrets.py"))
+
+    def test_the_secrets_hint_ignores_the_case_of_the_name(self):
+        rt = self.launched(Reply(self.payload), Reply(status=404))
+        rt.enter_user("rhsplinter")
+        rt.frames_for(6)
+        self.assertEqual(rt.app.handle, "rhsplinter")
+        self.assertEqual(rt.app.problem, ("User not found", "Check GITHUB_USERNAME in secrets.py"))
+
+    def test_a_user_looked_up_by_hand_gets_no_hint_about_secrets(self):
+        rt = self.launched(Reply(self.payload), Reply(other_payload()), Reply(status=404))
+        rt.enter_user("octocat")
+        rt.frames_for(6)
+        rt.wait(JUST_AFTER_REFRESH, step=SECOND)
+        rt.frames_for(3)
+        self.assertEqual(rt.app.handle, "octocat")
+        self.assertEqual(rt.app.problem, ("User not found", ""))
+        self.assertEqual(footer(rt)[0], "User not found - MENU change user")
 
     def test_two_unknown_users_in_a_row_do_not_loop(self):
         rt = self.launch(Reply(status=404), Reply(status=404), Reply(status=404))
@@ -1077,7 +1125,7 @@ class MissingWifiTests(AppCase):
 
 
 class ReopenTests(AppCase):
-    def test_a_reopened_app_goes_back_to_the_default_user(self):
+    def test_a_reopened_app_goes_back_to_the_configured_user(self):
         other = other_payload()
         rt = self.launched(Reply(self.payload), Reply(other))
         rt.enter_user("octocat")
@@ -1095,7 +1143,7 @@ class ReopenTests(AppCase):
         self.assertEqual(len(reopened.requests), 1)
         self.assertEqual(reopened.app.handle, "RHSplinter")
 
-    def test_the_default_graph_is_still_there_offline_after_looking_up_someone_else(self):
+    def test_the_configured_graph_is_still_there_offline_after_looking_up_someone_else(self):
         rt = self.launched(Reply(self.payload), Reply(other_payload()))
         rt.enter_user("octocat")
         rt.frames_for(6)
@@ -1105,7 +1153,7 @@ class ReopenTests(AppCase):
         self.assertIn(summary_text(self.total), reopened.texts())
         self.assertEqual(footer(reopened), ("Wi-Fi isn't set up - showing saved data", reopened.namespace["MUTED"]))
 
-    def test_someone_elses_graph_is_never_saved_in_place_of_the_default(self):
+    def test_someone_elses_graph_is_never_saved_in_place_of_the_configured_one(self):
         rt = self.launched(Reply(error=OSError("offline")), Reply(other_payload()))
         rt.enter_user("octocat")
         rt.frames_for(6)
@@ -1138,6 +1186,314 @@ class ReopenTests(AppCase):
             self.assertEqual(len(rt.requests), 1)
             self.assertFalse(rt.requests[0].done)
             self.assertFalse(rt.exists(DOWNLOAD_FILE))
+
+
+class ConfiguredUserTests(AppCase):
+    """The user comes from GITHUB_USERNAME in the badge's secrets.py."""
+
+    def test_the_user_is_the_one_in_secrets(self):
+        rt = self.launched(Reply(other_payload()), username="octocat")
+        self.assertEqual(rt.app.handle, "octocat")
+        self.assertEqual(rt.requests[0].url, "https://github.com/octocat.contribs")
+        self.assertIn("@octocat", rt.texts())
+        self.assertNotIn("@RHSplinter", rt.texts())
+        self.assertEqual(rt.read_json(CACHE_FILE)["h"], "octocat")
+        self.assertIn("secrets", rt.imports)
+        self.assertEqual(rt.namespace["CONFIGURED"], "octocat")
+        self.assertEqual(rt.namespace["REJECTED"], "")
+
+    def test_the_setting_is_read_as_text_and_trimmed(self):
+        cases = (("octocat", "octocat"), ("OctoCat", "OctoCat"), ("  octocat\n", "octocat"),
+                 ("\toctocat \r\n", "octocat"), (12345, "12345"), ("a-b-c", "a-b-c"), ("x" * 39, "x" * 39))
+        for setting, expected in cases:
+            with self.subTest(repr(setting)):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launched(Reply(other_payload()), root=root, username=setting)
+                    self.assertEqual(rt.app.handle, expected)
+                    self.assertEqual(rt.requests[0].url, "https://github.com/{}.contribs".format(expected))
+                    self.assertIn("@" + expected, rt.texts())
+                    self.assertEqual(rt.read_json(CACHE_FILE)["h"], expected)
+
+    def test_only_the_username_is_read_from_secrets(self):
+        rt = self.launched(Reply(self.payload))
+        self.assertEqual(rt.secrets.read, ["GITHUB_USERNAME"])
+
+    def test_the_setting_is_read_again_each_time_the_app_starts(self):
+        first = self.launched(Reply(self.payload))
+        self.assertEqual(first.app.handle, "RHSplinter")
+        second = self.launch(Reply(other_payload()), username="octocat")
+        second.frame()
+        self.assertEqual(second.app.handle, "octocat")
+        self.assertIsNone(second.app.graph)
+        self.assertIn("@octocat", second.texts())
+        second.frames_for(5)
+        self.assertEqual(second.requests[0].url, "https://github.com/octocat.contribs")
+        self.assertEqual(second.read_json(CACHE_FILE)["h"], "octocat")
+
+    def test_only_the_user_in_secrets_is_saved(self):
+        other = other_payload()
+        self.assertNotEqual(other["total_contributions"], self.total)
+        rt = self.launched(Reply(self.payload), Reply(other), username="octocat")
+        rt.enter_user("RHSplinter")
+        rt.frames_for(6)
+        self.assertEqual(rt.app.handle, "RHSplinter")
+        self.assertIn(summary_text(other["total_contributions"]), rt.texts())
+        cache = rt.read_json(CACHE_FILE)
+        self.assertEqual(cache["h"], "octocat")
+        self.assertEqual(sum(cache["c"]), self.total)
+
+
+class SetupPageTests(AppCase):
+    """GITHUB_USERNAME is blank or is not a username, so the app asks for it to be set in secrets.py."""
+
+    def test_a_blank_setting_asks_for_the_username(self):
+        for name, setting in BLANK_SETTINGS:
+            with self.subTest(name):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launch(Reply(self.payload), root=root, username=setting)
+                    rt.frames_for(6)
+                    texts = rt.texts()
+                    self.assertIsNone(rt.app.handle)
+                    self.assertEqual(rt.namespace["REJECTED"], "")
+                    for text in ("GitHub username not set", "Set your GitHub handle in the",
+                                 "secrets.py file on your badge:", SETUP_EXAMPLE, "Then open this app again."):
+                        self.assertIn(text, texts)
+                    self.assertNotIn("Invalid GitHub username", texts)
+                    self.assertEqual([t for t in texts if t.startswith("@")], [])
+                    self.assertEqual(footer(rt), ("MENU look up a user", rt.namespace["MUTED"]))
+                    self.assertEqual(rt.requests, [])
+                    self.assertEqual(rt.missing_details.shown, [])
+                    self.assertEqual(self.saved_files(rt), [])
+
+    def test_a_setting_that_is_not_a_username_is_reported(self):
+        for name, setting, shown in REFUSED_SETTINGS:
+            with self.subTest(name):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launch(Reply(self.payload), root=root, username=setting)
+                    rt.frames_for(6)
+                    texts = rt.texts()
+                    self.assertIsNone(rt.app.handle)
+                    self.assertEqual(rt.namespace["REJECTED"], shown)
+                    for text in ("Invalid GitHub username", '"' + shown + '"', "Use letters, numbers and hyphens",
+                                 "Fix it in secrets.py on your badge:", SETUP_EXAMPLE, "Then open this app again."):
+                        self.assertIn(text, texts)
+                    self.assertNotIn("GitHub username not set", texts)
+                    self.assertTrue(all(text.isascii() for text in texts), texts)
+                    self.assertEqual(footer(rt), ("MENU look up a user", rt.namespace["MUTED"]))
+                    self.assertEqual(rt.requests, [])
+                    self.assertEqual(self.saved_files(rt), [])
+
+    def test_the_page_is_laid_out_from_top_to_bottom_with_the_example_in_its_panel(self):
+        for name, setting in (("blank", ""), ("refused", "@octocat")):
+            with self.subTest(name):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launch(root=root, username=setting)
+                    rt.frame()
+                    rows = [op[3] for op in rt.screen.ops if op[0] == "text"]
+                    self.assertEqual(rows, sorted(set(rows)))
+                    self.assertEqual(rows[-1], rt.namespace["FOOTER_Y"])
+                    panels = [op for op in rt.screen.ops if op[0] == "shape"]
+                    self.assertEqual(len(panels), 1)
+                    _, px, py, pw, ph, _ = panels[0][1]
+                    text, x, y, size, _ = text_op(rt, SETUP_EXAMPLE)
+                    width = rt.screen.measure_text(text, size)[0]
+                    self.assertTrue(px <= x and x + width <= px + pw, (px, pw, x, width))
+                    self.assertTrue(py <= y and y + size <= py + ph, (py, ph, y, size))
+
+    def test_the_body_lines_are_spaced_out_and_centred_in_their_band(self):
+        narrow = lambda text, size: len(text) * size * 0.4
+        pages = (
+            ("blank", "", ("Set your GitHub handle in the", "secrets.py file on your badge:")),
+            ("refused", "@octocat", ('"@octocat"', "Use letters, numbers and hyphens",
+                                     "Fix it in secrets.py on your badge:")),
+        )
+        for name, setting, lines in pages:
+            with self.subTest(name):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launch(root=root, username=setting, measure=narrow)
+                    rt.frame()
+                    ns = rt.namespace
+                    ops = [text_op(rt, text) for text in lines]
+                    for (_, _, y, size, _), (_, _, next_y, _, _) in zip(ops, ops[1:]):
+                        self.assertGreaterEqual(next_y - (y + size), 6)
+                    above = ops[0][2] - ns["SETUP_BODY_TOP"]
+                    below = ns["SETUP_BODY_BOTTOM"] - (ops[-1][2] + ops[-1][3])
+                    self.assertLessEqual(abs(above - below), 1, (above, below))
+
+    def test_text_stays_between_the_side_margins_even_with_a_wide_font(self):
+        fonts = (("wide", pessimistic), ("wider", lambda text, size: len(text) * size * 0.75))
+        settings = ("", "@octocat", "W" * 29 + "!")
+        for font, measure in fonts:
+            for setting in settings:
+                for missing in ([], ["WIFI_SSID"]):
+                    with self.subTest(font=font, setting=setting, missing=missing):
+                        with tempfile.TemporaryDirectory() as root:
+                            rt = self.launch(root=root, username=setting, missing=missing, measure=measure)
+                            rt.frame()
+                            margin, width = rt.namespace["MARGIN"], rt.namespace["WIDTH"]
+                            for op in rt.screen.ops:
+                                if op[0] == "text":
+                                    _, text, x, _, size, _ = op
+                                    self.assertGreaterEqual(x, margin - 1e-9, text)
+                                    self.assertLessEqual(x + measure(text, size), width - margin + 1e-9, text)
+
+    def test_the_colours(self):
+        pages = (
+            ("blank", "", "GitHub username not set",
+             (("Set your GitHub handle in the", "TEXT"), ("secrets.py file on your badge:", "TEXT"))),
+            ("refused", "@octocat", "Invalid GitHub username",
+             (('"@octocat"', "TEXT"), ("Use letters, numbers and hyphens", "MUTED"),
+              ("Fix it in secrets.py on your badge:", "TEXT"))),
+        )
+        for name, setting, title, lines in pages:
+            with self.subTest(name):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launch(root=root, username=setting)
+                    rt.frame()
+                    ns = rt.namespace
+                    self.assertEqual(rt.screen.ops[0], ("clear", ns["BG"]))
+                    self.assertEqual(text_op(rt, title)[4], ns["RED"])
+                    for text, colour in lines:
+                        self.assertEqual(text_op(rt, text)[4], ns[colour], text)
+                    self.assertEqual(text_op(rt, SETUP_EXAMPLE)[4], ns["LIME"])
+                    self.assertEqual(text_op(rt, "Then open this app again.")[4], ns["MUTED"])
+                    self.assertEqual([op[2] for op in rt.screen.ops if op[0] == "shape"], [ns["PANEL"]])
+
+    def test_nothing_is_fetched_or_retried(self):
+        rt = self.launch(Reply(self.payload), Reply(self.payload), username="")
+        rt.frames_for(10)
+        rt.wait(3 * 60 * MINUTE, step=10 * SECOND)
+        self.assertEqual(rt.requests, [])
+        self.assertIsNone(rt.app.next_fetch_at)
+        self.assertIn("GitHub username not set", rt.texts())
+
+    def test_only_menu_does_anything(self):
+        rt = self.launch(Reply(self.payload), username="")
+        rt.frames_for(3)
+        before = rt.texts()
+        for name in ("UP", "DOWN", "LEFT", "RIGHT", "BACK", "SELECT"):
+            rt.press(name)
+            self.assertIsNone(rt.app.editor)
+            self.assertEqual(rt.texts(), before)
+        rt.hold("SELECT", 2 * SECOND)
+        self.assertEqual(rt.requests, [])
+        rt.press("MENU")
+        self.assertIsNotNone(rt.app.editor)
+
+    def test_a_saved_graph_waits_until_the_username_is_fixed(self):
+        saved = self.launched(Reply(self.payload))
+        before = saved.read_json(CACHE_FILE)
+        rt = self.launch(Reply(self.payload), username="  ")
+        rt.frames_for(5)
+        self.assertIsNone(rt.app.graph)
+        self.assertIn("GitHub username not set", rt.texts())
+        self.assertEqual(rt.read_json(CACHE_FILE), before)
+        fixed = self.launch(Reply(self.payload, pumps=50))
+        fixed.frame()
+        self.assertIn(summary_text(self.total), fixed.texts())
+
+    def test_the_wifi_connection_is_still_started_for_lookups(self):
+        rt = self.launch(username="")
+        self.assertEqual(rt.wifi.calls, [((), {"timeout": 10, "retries": 100000})])
+
+    def test_missing_wifi_is_mentioned_but_the_username_comes_first(self):
+        for setting in ("", "@octocat"):
+            with self.subTest(setting):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launch(Reply(self.payload), root=root, username=setting, missing=["WIFI_SSID"])
+                    rt.frames_for(5)
+                    self.assertIsNone(rt.app.handle)
+                    self.assertEqual(rt.missing_details.shown, [])
+                    self.assertEqual(footer(rt), ("Wi-Fi isn't set up either - set WIFI_SSID", rt.namespace["MUTED"]))
+                    rt.wait(5 * MINUTE, step=SECOND)
+                    rt.press("SELECT")
+                    self.assertEqual(rt.requests, [])
+                    self.assertEqual(rt.wifi.calls, [])
+                    self.assertNotIn("wifi", rt.imports)
+
+
+class SetupLookupTests(AppCase):
+    """The keyboard still works on the setup page, so someone can be looked up without editing secrets.py."""
+
+    PAGES = (("blank", "", "GitHub username not set"), ("refused", "@octocat", "Invalid GitHub username"))
+
+    def test_menu_opens_an_empty_keyboard_and_closes_it_again(self):
+        for name, setting, title in self.PAGES:
+            with self.subTest(name):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launch(root=root, username=setting)
+                    rt.frame()
+                    rt.press("MENU")
+                    self.assertIsNotNone(rt.app.editor)
+                    self.assertEqual(rt.app.editor.text, "")
+                    self.assertIn("username", rt.texts())
+                    rt.press("MENU")
+                    self.assertIsNone(rt.app.editor)
+                    self.assertIn(title, rt.texts())
+
+    def test_a_user_looked_up_by_hand_is_shown_but_never_saved(self):
+        other = other_payload()
+        rt = self.launch(Reply(other), Reply(other), username="")
+        rt.frames_for(3)
+        rt.enter_user("octocat")
+        rt.frames_for(6)
+        self.assertEqual(rt.app.handle, "octocat")
+        self.assertEqual(rt.requests[0].url, "https://github.com/octocat.contribs")
+        self.assertIn("@octocat", rt.texts())
+        self.assertIn(summary_text(other["total_contributions"]), rt.texts())
+        self.assertEqual(footer(rt)[0], HINT)
+        self.assertEqual(self.saved_files(rt), [])
+        rt.wait(JUST_AFTER_REFRESH, step=SECOND)
+        rt.frames_for(3)
+        self.assertEqual(len(rt.requests), 2)
+        self.assertEqual(self.saved_files(rt), [])
+        reopened = self.launch(username="")
+        reopened.frame()
+        self.assertIn("GitHub username not set", reopened.texts())
+
+    def test_an_unknown_user_goes_back_to_the_setup_page(self):
+        for name, setting, title in self.PAGES:
+            with self.subTest(name):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launch(Reply(status=404), Reply(self.payload), root=root, username=setting)
+                    rt.frames_for(3)
+                    rt.enter_user("nosuchuser")
+                    rt.frames_for(6)
+                    app = rt.app
+                    self.assertIsNone(app.handle)
+                    self.assertIsNone(app.graph)
+                    self.assertIsNone(app.next_fetch_at)
+                    self.assertEqual(app.editor.text, "nosuchuser")
+                    self.assertEqual(app.editor.error, "User not found")
+                    rt.press("MENU")
+                    self.assertIn(title, rt.texts())
+                    self.assertEqual(footer(rt), ("MENU look up a user", rt.namespace["MUTED"]))
+                    rt.wait(3 * 60 * MINUTE, step=10 * SECOND)
+                    self.assertEqual(len(rt.requests), 1)
+
+    def test_an_unknown_user_after_a_failed_lookup_goes_back_to_the_setup_page(self):
+        rt = self.launch(Reply(error=OSError("down")), Reply(status=404), username="")
+        rt.frames_for(3)
+        rt.enter_user("octocat")
+        rt.frames_for(4)
+        self.assertIn("Couldn't reach GitHub", rt.texts())
+        rt.enter_user("ghost")
+        rt.frames_for(6)
+        self.assertIsNone(rt.app.handle)
+        self.assertEqual(rt.app.editor.text, "ghost")
+        rt.press("MENU")
+        self.assertIn("GitHub username not set", rt.texts())
+        rt.wait(3 * 60 * MINUTE, step=10 * SECOND)
+        self.assertEqual(len(rt.requests), 2)
+
+    def test_a_lookup_cannot_start_without_wifi(self):
+        rt = self.launch(username="", missing=["WIFI_SSID"])
+        rt.frames_for(3)
+        rt.enter_user("octocat")
+        self.assertIsNotNone(rt.app.editor)
+        self.assertEqual(rt.app.editor.error, "Set up Wi-Fi to look up users")
+        self.assertIsNone(rt.app.handle)
+        self.assertEqual(rt.requests, [])
 
 
 class FitSizeTests(AppCase):
@@ -1191,6 +1547,18 @@ class CentringTests(AppCase):
         rt.frames_for(2)
         self.assertCentred(rt, "@RHSplinter")
         self.assertEqual(text_op(rt, "@RHSplinter")[2], 90)
+
+    def test_the_setup_page_is_centred(self):
+        blank = ("GitHub username not set", "Set your GitHub handle in the", "secrets.py file on your badge:")
+        refused = ("Invalid GitHub username", '"@octocat"', "Use letters, numbers and hyphens",
+                   "Fix it in secrets.py on your badge:")
+        for setting, texts in (("", blank), ("@octocat", refused)):
+            with self.subTest(setting):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launch(root=root, username=setting)
+                    rt.frame()
+                    for text in texts + (SETUP_EXAMPLE, "Then open this app again."):
+                        self.assertCentred(rt, text)
 
 
 class GraphLayoutTests(AppCase):
@@ -1590,6 +1958,24 @@ class ScreenFitTests(AppCase):
         rt.frames_for(2)
         self.assertFits(rt, "wifi setup backdrop")
 
+    def test_the_setup_screens(self):
+        cases = (
+            ("blank", {"username": ""}),
+            ("blank without wifi", {"username": "", "missing": ["WIFI_SSID"]}),
+            ("refused", {"username": "@octocat"}),
+            ("refused without wifi", {"username": "@octocat", "missing": ["WIFI_SSID"]}),
+            ("forty characters", {"username": "a" * 40}),
+            ("widest allowed text", {"username": "W" * 29 + "!"}),
+            ("another script", {"username": "\u65e5\u672c\u8a9e" * 5}),
+        )
+        for name, options in cases:
+            with self.subTest(name):
+                with tempfile.TemporaryDirectory() as root:
+                    rt = self.launch(root=root, measure=pessimistic, **options)
+                    rt.frames_for(2)
+                    self.assertIsNone(rt.app.handle)
+                    self.assertFits(rt, name)
+
     def test_the_graph_screen_stays_within_its_drawing_budget(self):
         rt = self.launched(Reply(self.payload))
         self.assertLess(len(rt.screen.ops), 450)
@@ -1617,10 +2003,24 @@ class RandomUseTests(AppCase):
             return Reply(pump_raises=OSError("socket closed"), pumps=pumps)
         return Reply(rng.choice(pool), hold=True)
 
-    def check_invariants(self, rt, seed, step):
+    # What GITHUB_USERNAME holds, and the user the app should take from it (None when it can't be used).
+    CONFIGURATIONS = (
+        ("RHSplinter", "RHSplinter"),
+        ("", None),
+        ("  Hubot  ", "Hubot"),
+        ("@octocat", None),
+        (NO_KEY, None),
+        ("octocat", "octocat"),
+    )
+
+    def check_invariants(self, rt, seed, step, expected):
         app = rt.app
         where = (seed, step)
-        self.assertTrue(logic.valid_handle(app.handle), where)
+        self.assertTrue(app.handle is None or logic.valid_handle(app.handle), where)
+        if app.handle is None:
+            self.assertIsNone(app.graph, where)
+            self.assertIsNone(app.request, where)
+            self.assertIsNone(app.next_fetch_at, where)
         self.assertEqual(app.graph is None, app.view is None, where)
         if app.graph is not None:
             self.assertTrue(app.graph.first <= app.cursor <= app.graph.last, where)
@@ -1629,24 +2029,29 @@ class RandomUseTests(AppCase):
         if app.editor is not None:
             self.assertLessEqual(len(app.editor.text), logic.MAX_HANDLE_LENGTH, where)
         self.assertLessEqual(len([r for r in rt.requests if not r.done]), 1, where)
+        for request in rt.requests:
+            self.assertRegex(request.url, r"^https://github\.com/[A-Za-z0-9-]{1,39}\.contribs$", where)
         self.assertFalse(rt.exists(OLD_USER_FILE), where)
         saved = self.saved_files(rt)
         self.assertTrue(set(saved) <= {CACHE_NAME, os.path.basename(DOWNLOAD_FILE)}, (where, saved))
         if rt.exists(CACHE_FILE):
+            self.assertIsNotNone(expected, where)
             cached = logic.graph_from_dict(rt.read_json(CACHE_FILE))
-            self.assertTrue(logic.same_handle(cached.handle, logic.DEFAULT_HANDLE), where)
+            self.assertTrue(logic.same_handle(cached.handle, expected), where)
         if app.request is None:
             self.assertFalse(rt.exists(DOWNLOAD_FILE), where)
 
     def run_seed(self, seed):
         rng = random.Random(seed)
+        username, expected = self.CONFIGURATIONS[seed % len(self.CONFIGURATIONS)]
         pool = [self.payload, other_payload(),
                 payloads.build(weeks=rng.choice((1, 20, 54)), last_week_days=rng.randint(1, 7)),
                 payloads.build(first_week_start=rng.randint(0, 6))]
         replies = [self.make_reply(rng, pool) for _ in range(400)]
         with tempfile.TemporaryDirectory() as root:
-            rt = self.launch(*replies, root=root)
+            rt = self.launch(*replies, root=root, username=username)
             rt.screen.recording = False
+            self.assertEqual(rt.app.handle, expected)
             buttons = ("UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK", "MENU")
             for step in range(RANDOM_STEPS):
                 roll = rng.random()
@@ -1664,11 +2069,11 @@ class RandomUseTests(AppCase):
                         request.release()
                 else:
                     rt.frames_for(rng.randint(1, 12))
-                self.check_invariants(rt, seed, step)
+                self.check_invariants(rt, seed, step, expected)
             for request in rt.requests:
                 request.release()
             rt.wait(5 * MINUTE, step=SECOND)
-            self.check_invariants(rt, seed, "end")
+            self.check_invariants(rt, seed, "end", expected)
 
     def test_random_use(self):
         for seed in range(RANDOM_SEEDS):

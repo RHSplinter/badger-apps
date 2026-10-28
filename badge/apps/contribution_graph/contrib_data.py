@@ -4,9 +4,9 @@ Nothing in this module touches the badge runtime, so the same code runs on
 the badge (MicroPython) and on a desktop for unit tests.
 """
 
-DEFAULT_HANDLE = "RHSplinter"
 CONTRIBS_URL = "https://github.com/{}.contribs"
 MAX_HANDLE_LENGTH = 39
+MAX_SHOWN_LENGTH = 30
 MAX_WEEKS = 54
 MAX_DETAIL_LENGTH = 40
 CACHE_VERSION = 1
@@ -14,6 +14,7 @@ NO_DATA = "."
 RETRY_DELAYS_MS = (30000, 60000, 120000)
 
 _HANDLE_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+_SPACE = " \t\n\r\x0b\x0c"
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _WEEKDAYS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
@@ -39,6 +40,23 @@ def valid_handle(handle):
 
 def same_handle(a, b):
     return isinstance(a, str) and isinstance(b, str) and a.lower() == b.lower()
+
+
+def configured_handle(value):
+    """(handle, rejected) for the GITHUB_USERNAME setting in secrets.py.
+
+    handle is the username to use, or None when the setting can't be used.
+    In that case rejected is "" for a blank setting and otherwise the text that
+    was refused, as printable ASCII short enough to draw. Only ASCII
+    whitespace is trimmed, so the badge and a desktop give the same answer.
+    """
+    text = str(value or "").strip(_SPACE)
+    if valid_handle(text):
+        return text, ""
+    rejected = "".join(ch if " " <= ch <= "~" else "?" for ch in text)
+    if len(rejected) > MAX_SHOWN_LENGTH:
+        rejected = rejected[:MAX_SHOWN_LENGTH - 3] + "..."
+    return None, rejected
 
 
 def contribs_url(handle):

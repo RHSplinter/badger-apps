@@ -28,6 +28,10 @@ if str(APP_SOURCE) not in sys.path:
 
 BUTTONS = {"UP": 1, "DOWN": 2, "LEFT": 3, "RIGHT": 4, "SELECT": 5, "BACK": 6, "MENU": 7}
 
+CONFIGURED_HANDLE = "RHSplinter"   # what GITHUB_USERNAME holds unless a test says otherwise
+NO_KEY = object()                  # secrets.py has no GITHUB_USERNAME line
+NO_MODULE = object()               # there is no secrets module to import
+
 
 class HTTPException(Exception):
     """What the firmware's fetch module raises for a reply other than 200."""
@@ -164,6 +168,27 @@ class FakeMissingDetails:
             background()
 
 
+class FakeSecrets:
+    """The firmware's secrets module. It remembers which settings the app asked for.
+
+    The other settings are filled in so that reading one by mistake would show.
+    """
+
+    def __init__(self, username):
+        values = {"WIFI_SSID": "home", "WIFI_PASSWORD": "hunter2", "GITHUB_TOKEN": "ghp_not_for_this_app"}
+        if username is not NO_KEY:
+            values["GITHUB_USERNAME"] = username
+        self.__dict__["_values"] = values
+        self.__dict__["read"] = []
+
+    def __getattr__(self, name):
+        self.read.append(name)
+        try:
+            return self._values[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
 class FakeOS:
     """The few os calls the app uses, with the badge's paths mapped to a temp folder."""
 
@@ -248,7 +273,8 @@ class Runtime:
     FRAME_MS = 33
     source_override = None    # lets the mutation check run a modified copy of the app
 
-    def __init__(self, root, *, missing=(), old_user=None, cache=None, replies=(), measure=None):
+    def __init__(self, root, *, missing=(), old_user=None, cache=None, replies=(), measure=None,
+                 username=CONFIGURED_HANDLE):
         self.root = Path(root)
         self.state_dir = self.root / "state"
         self.replies = list(replies)
@@ -259,6 +285,8 @@ class Runtime:
         self.screen = FakeScreen(measure)
         self.wifi = FakeWifi()
         self.missing_details = FakeMissingDetails(missing)
+        self.username = username
+        self.secrets = None if username is NO_MODULE else FakeSecrets(username)
         self.fetch = FakeFetch(self)
         self.os = FakeOS(self)
         self.registered = None
@@ -300,12 +328,16 @@ class Runtime:
             "missing_details": self.missing_details,
             "wifi": self.wifi,
         }
+        if self.secrets is not None:
+            modules["secrets"] = self.secrets
         real_import = builtins.__import__
 
         def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
             self.imports.append(name)
             if name in modules:
                 return modules[name]
+            if name == "secrets":
+                raise ImportError("no module named 'secrets'")
             return real_import(name, globals, locals, fromlist, level)
 
         def fake_open(path, *args, **kwargs):

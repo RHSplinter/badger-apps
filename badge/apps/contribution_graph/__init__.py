@@ -12,6 +12,11 @@ sys.path.insert(0, APP_DIR)
 import fetch
 import missing_details
 
+try:
+    import secrets
+except ImportError:
+    secrets = None
+
 import contrib_data as logic
 
 badge.mode(HIRES | VSYNC)
@@ -25,6 +30,10 @@ if MISSING:
     wifi = None
 else:
     import wifi
+
+# The user to show comes from GITHUB_USERNAME in secrets.py. CONFIGURED is None
+# when that can't be used, and REJECTED is then the text that was refused.
+CONFIGURED, REJECTED = logic.configured_handle(getattr(secrets, "GITHUB_USERNAME", ""))
 
 try:
     FONT = missing_details.mona_sans()
@@ -85,8 +94,18 @@ KEY_W, KEY_H, KEY_PITCH_X, KEY_PITCH_Y = 28, 29, 30, 31
 KEYS_X = (WIDTH - (logic.KEY_COLUMNS * KEY_PITCH_X - 2)) // 2
 KEYS_Y = 86
 
+SETUP_TITLE_Y = 14
+SETUP_BODY_TOP = 40
+SETUP_BODY_BOTTOM = 130
+SETUP_LINE_GAP = 8
+SETUP_PANEL_Y = 136
+SETUP_PANEL_H = 38
+SETUP_AFTER_Y = 186
+SETUP_EXAMPLE = 'GITHUB_USERNAME = "your-handle"'
+
 PANEL_SHAPE = shape.rounded_rectangle(MARGIN, PANEL_Y, WIDTH - 2 * MARGIN, PANEL_H, 6)
 FIELD_SHAPE = shape.rounded_rectangle(FIELD_X, FIELD_Y, FIELD_W, FIELD_H, 6)
+SETUP_SHAPE = shape.rounded_rectangle(MARGIN, SETUP_PANEL_Y, WIDTH - 2 * MARGIN, SETUP_PANEL_H, 6)
 KEY_POSITIONS = [
     (KEYS_X + (i % logic.KEY_COLUMNS) * KEY_PITCH_X, KEYS_Y + (i // logic.KEY_COLUMNS) * KEY_PITCH_Y)
     for i in range(len(logic.KEYS))
@@ -138,6 +157,10 @@ def draw_text(string, x, y, size, pen):
 def center_text(string, y, size, pen):
     width, _ = screen.measure_text(string, font_size=size)
     draw_text(string, (WIDTH - width) / 2, y, size, pen)
+
+
+def center_fit(string, y, size, min_size, pen):
+    center_text(string, y, fit_size(string, size, WIDTH - 2 * MARGIN, min_size), pen)
 
 
 def key_width(label, size):
@@ -216,9 +239,9 @@ class GraphView:
 
 class App:
     def __init__(self):
-        # The app always opens on the default user. Earlier versions saved the last user here.
+        # The app opens on the user from secrets.py. Earlier versions saved the last user here.
         remove(OLD_USER_FILE)
-        self.handle = logic.DEFAULT_HANDLE
+        self.handle = CONFIGURED
         self.graph = read_cache(self.handle)
         self.view = None
         self.cursor = 0
@@ -228,7 +251,7 @@ class App:
         self.previous = None      # (handle, graph) to return to if a new user is not found
         self.problem = None       # (headline, detail) of the latest failure
         self.failures = 0
-        self.next_fetch_at = None if MISSING else 0
+        self.next_fetch_at = None if MISSING or self.handle is None else 0
         self.repeaters = []
         self.rep_up = self.new_repeater()
         self.rep_down = self.new_repeater()
@@ -283,7 +306,7 @@ class App:
         if badge.pressed(BUTTON_SELECT):
             self.refresh_now()
         if badge.pressed(BUTTON_MENU):
-            self.open_editor(self.handle)
+            self.open_editor(self.handle or "")
 
     def editor_input(self):
         ed = self.editor
@@ -343,18 +366,19 @@ class App:
         self.failures = 0
         if self.previous is None:
             self.next_fetch_at = None
-            self.problem = ("User not found", "")
+            hint = "Check GITHUB_USERNAME in secrets.py" if logic.same_handle(rejected, CONFIGURED) else ""
+            self.problem = ("User not found", hint)
             return
         self.handle, self.graph = self.previous
         self.previous = None
         self.problem = None
         self.view = None
-        if self.graph is None:
-            self.next_fetch_at = 0
-        else:
+        if self.graph is not None:
             self.next_fetch_at = badge.ticks + REFRESH_MS
             self.cursor = self.graph.last
             self.view = GraphView(self.graph, self.handle)
+        else:
+            self.next_fetch_at = None if self.handle is None else 0
         if self.editor is None:
             self.open_editor(rejected, "User not found")
         else:
@@ -373,13 +397,13 @@ class App:
         self.problem = None
         self.failures = 0
         self.next_fetch_at = badge.ticks + REFRESH_MS
-        if logic.same_handle(self.handle, logic.DEFAULT_HANDLE):
+        if logic.same_handle(self.handle, CONFIGURED):
             write_cache(fresh)
 
     # -- network -------------------------------------------------------
 
     def refresh_now(self):
-        if MISSING or self.request is not None:
+        if MISSING or self.handle is None or self.request is not None:
             return
         self.failures = 0
         self.next_fetch_at = 0
@@ -449,6 +473,8 @@ class App:
     def draw(self):
         if self.editor is not None:
             self.draw_editor()
+        elif self.handle is None:
+            self.draw_setup()
         elif self.graph is not None:
             self.draw_graph()
         elif MISSING:
@@ -464,6 +490,8 @@ class App:
 
     def footer(self):
         """(text, colour) for the line at the bottom of the screen."""
+        if self.handle is None:
+            return ("Wi-Fi isn't set up either - set WIFI_SSID" if MISSING else "MENU look up a user"), MUTED
         if self.request is not None:
             text, failed = network_status(self.request)
             return text, (RED if failed else MUTED)
@@ -523,6 +551,31 @@ class App:
             draw_text(value, x, STATS_Y, v.stat_sizes[i], LIME)
             draw_text(label, x, STATS_Y + 24, SMALL, MUTED)
 
+        self.draw_footer()
+
+    def draw_setup(self):
+        screen.pen = BG
+        screen.clear()
+        if REJECTED:
+            quoted = '"' + REJECTED + '"'
+            title = "Invalid GitHub username"
+            body = ((quoted, 18, TEXT),
+                    ("Use letters, numbers and hyphens", 13, MUTED),
+                    ("Fix it in secrets.py on your badge:", 16, TEXT))
+        else:
+            title = "GitHub username not set"
+            body = (("Set your GitHub handle in the", 16, TEXT),
+                    ("secrets.py file on your badge:", 16, TEXT))
+        center_fit(title, SETUP_TITLE_Y, 22, 14, RED)
+        height = sum(size for _, size, _ in body) + SETUP_LINE_GAP * (len(body) - 1)
+        y = SETUP_BODY_TOP + (SETUP_BODY_BOTTOM - SETUP_BODY_TOP - height) // 2
+        for text, size, pen in body:
+            center_fit(text, y, size, 10, pen)
+            y += size + SETUP_LINE_GAP
+        screen.pen = PANEL
+        screen.shape(SETUP_SHAPE)
+        center_fit(SETUP_EXAMPLE, SETUP_PANEL_Y + 10, 16, 10, LIME)
+        center_fit("Then open this app again.", SETUP_AFTER_Y, 14, 10, MUTED)
         self.draw_footer()
 
     def draw_loading(self):

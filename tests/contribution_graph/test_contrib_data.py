@@ -74,10 +74,58 @@ class HandleTests(unittest.TestCase):
     def test_url(self):
         self.assertEqual(logic.contribs_url("octocat"), "https://github.com/octocat.contribs")
 
-    def test_default_handle(self):
-        self.assertEqual(logic.DEFAULT_HANDLE, "RHSplinter")
-        self.assertTrue(logic.valid_handle(logic.DEFAULT_HANDLE))
-        self.assertEqual(logic.contribs_url(logic.DEFAULT_HANDLE), "https://github.com/RHSplinter.contribs")
+    def test_there_is_no_built_in_default_user(self):
+        self.assertFalse(hasattr(logic, "DEFAULT_HANDLE"))
+
+
+class ConfiguredHandleTests(unittest.TestCase):
+    def test_a_valid_setting_is_used_as_it_is(self):
+        for value in ("RHSplinter", "octocat", "a", "-", "x" * 39, "a-b-1", "0"):
+            with self.subTest(value=value):
+                self.assertEqual(logic.configured_handle(value), (value, ""))
+
+    def test_surrounding_whitespace_is_trimmed(self):
+        for value in (" octocat", "octocat ", "\toctocat\r\n", "\x0b\x0coctocat \t", "  octocat  "):
+            with self.subTest(value=value):
+                self.assertEqual(logic.configured_handle(value), ("octocat", ""))
+
+    def test_a_blank_setting_is_not_a_username(self):
+        for value in ("", " ", "   ", "\t", "\r\n", " \t\n\r\x0b\x0c ", None, 0, False, [], {}):
+            with self.subTest(value=value):
+                self.assertEqual(logic.configured_handle(value), (None, ""))
+
+    def test_a_number_is_read_as_its_digits(self):
+        self.assertEqual(logic.configured_handle(12345), ("12345", ""))
+
+    def test_text_that_cannot_be_a_username_is_handed_back_for_the_error_page(self):
+        for value, shown in (("@octocat", "@octocat"), ("octo cat", "octo cat"),
+                             ("octo_cat", "octo_cat"), ("github.com/octocat", "github.com/octocat"),
+                             (" @octocat\n", "@octocat"), ("octocat!", "octocat!"), ("-~-", "-~-"),
+                             (["a"], "['a']")):
+            with self.subTest(value=value):
+                self.assertEqual(logic.configured_handle(value), (None, shown))
+
+    def test_a_username_that_is_too_long_is_refused(self):
+        self.assertEqual(logic.configured_handle("x" * 40), (None, "x" * 27 + "..."))
+
+    def test_the_refused_text_is_made_printable(self):
+        for value, shown in (("caf\u00e9", "caf?"), ("a\x00b", "a?b"), ("a\x7fb", "a?b"),
+                             ("\u00a0", "?"), ("\u00a0octocat", "?octocat"), ("a\nb", "a?b"),
+                             ("tab\there", "tab?here"), ("\U0001f419", "?"), ("a b", "a b")):
+            with self.subTest(value=value):
+                self.assertEqual(logic.configured_handle(value), (None, shown))
+
+    def test_long_refused_text_is_cut_to_fit_the_screen(self):
+        limit = logic.MAX_SHOWN_LENGTH
+        self.assertEqual(logic.configured_handle("!" * limit), (None, "!" * limit))
+        self.assertEqual(logic.configured_handle("!" * (limit + 1)), (None, "!" * (limit - 3) + "..."))
+        shown = logic.configured_handle("https://github.com/" + "o" * 100)[1]
+        self.assertEqual(len(shown), limit)
+        self.assertTrue(shown.endswith("..."))
+
+    def test_only_ascii_whitespace_is_trimmed(self):
+        self.assertEqual(logic.configured_handle("\u00a0"), (None, "?"))
+        self.assertEqual(logic.configured_handle("\u3000octocat"), (None, "?octocat"))
 
 
 class TextTests(unittest.TestCase):
